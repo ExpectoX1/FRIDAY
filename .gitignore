@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+*.log
+friday.log
+
+# Model cache
+.cache/
+*.bin
+*.pt
+*.ckpt
+
+# Whisper / Kokoro / HuggingFace cache
+~/.cache/huggingface/
+~/.cache/whisper/
+
+# FRIDAY workspace
+FRIDAY/workspace/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Cursor / IDE
+.cursor/
+.vscode/
+.idea/
+
+# Python version
+.python-version
+
+# pyproject
+uv.lock
