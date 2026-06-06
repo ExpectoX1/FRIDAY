@@ -1,9 +1,9 @@
 import subprocess
 import shlex
 import ollama
-import logging
 from pathlib import Path
 from datetime import datetime
+from logger import log_system
 
 # =========================================================
 # CONFIG
@@ -12,36 +12,33 @@ from datetime import datetime
 WORKSPACE_DIR = str(Path.home() / "FRIDAY" / "workspace")
 Path(WORKSPACE_DIR).mkdir(parents=True, exist_ok=True)
 
-# =========================================================
-# LOGGING
-# =========================================================
-
-logging.basicConfig(
-    filename=str(Path.home() / "FRIDAY" / "friday.log"),
-    level=logging.INFO,
-    format="%(asctime)s | %(message)s"
-)
 
 def log(command: str, classification: str, result: str):
-    logging.info(f"CMD: {command} | CLASS: {classification} | RESULT: {result[:100]}")
+    log_system(
+        "executor", f"CMD: {command} | CLASS: {classification} | RESULT: {result}"
+    )
+
 
 # =========================================================
 # SHELL METACHARACTERS
 # =========================================================
 
-SHELL_METACHARACTERS = [
-    "&&", "||", ";", "|", ">", ">>",
-    "<", "`", "$(", "\n"
-]
+SHELL_METACHARACTERS = ["&&", "||", ";", "|", ">", ">>", "<", "`", "$(", "\n"]
 
 # =========================================================
 # SENSITIVE PATHS
 # =========================================================
 
 SENSITIVE_PATHS = [
-    ".ssh", ".aws", ".gnupg", ".env",
-    "Keychains", ".zsh_history", ".bash_history",
-    ".netrc", ".git-credentials"
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".env",
+    "Keychains",
+    ".zsh_history",
+    ".bash_history",
+    ".netrc",
+    ".git-credentials",
 ]
 
 # =========================================================
@@ -49,41 +46,76 @@ SENSITIVE_PATHS = [
 # =========================================================
 
 SAFE_COMMANDS = {
-    "ls", "pwd", "cat", "echo",
-    "git", "which", "whoami", "date",
+    "ls",
+    "pwd",
+    "cat",
+    "echo",
+    "git",
+    "which",
+    "whoami",
+    "date",
 }
 
 RISKY_COMMANDS = {
-    "mkdir", "touch", "mv", "cp",
-    "open", "python3", "node",
+    "mkdir",
+    "touch",
+    "mv",
+    "cp",
+    "open",
+    "python3",
+    "node",
+    "osascript",
 }
 
 BLOCKED_COMMANDS = {
-    "rm", "sudo", "mkfs", "dd", "shutdown",
-    "reboot", "chmod", "chown", "kill", "pkill",
-    "curl", "wget", "bash", "sh", "zsh", "fish",
-    "npm", "pip", "osascript", "diskutil",
-    "launchctl", "find",
+    "rm",
+    "sudo",
+    "mkfs",
+    "dd",
+    "shutdown",
+    "reboot",
+    "chmod",
+    "chown",
+    "kill",
+    "pkill",
+    "curl",
+    "wget",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "npm",
+    "pip",
+    "diskutil",
+    "launchctl",
+    "find",
 }
 
 DANGEROUS_PATTERNS = [
-    "rm -rf", ":(){:|:&};:",
-    "/dev/sda", "/dev/disk",
-    "mkfs", "dd if=",
+    "rm -rf",
+    ":(){:|:&};:",
+    "/dev/sda",
+    "/dev/disk",
+    "mkfs",
+    "dd if=",
 ]
 
 # =========================================================
 # VALIDATION
 # =========================================================
 
+
 def has_shell_metacharacters(command: str) -> bool:
     return any(char in command for char in SHELL_METACHARACTERS)
+
 
 def contains_sensitive_path(command: str) -> bool:
     return any(path in command for path in SENSITIVE_PATHS)
 
+
 def contains_dangerous_pattern(command: str) -> bool:
     return any(pattern in command.lower() for pattern in DANGEROUS_PATTERNS)
+
 
 def parse_command(command: str):
     try:
@@ -91,9 +123,11 @@ def parse_command(command: str):
     except Exception:
         return None
 
+
 # =========================================================
 # CLASSIFIER
 # =========================================================
+
 
 def classify_command(command: str) -> str:
     parts = parse_command(command)
@@ -125,9 +159,11 @@ def classify_command(command: str) -> str:
     # unknown commands — default RISKY, never auto-execute
     return "RISKY"
 
+
 # =========================================================
 # EXECUTION
 # =========================================================
+
 
 def execute(command: str) -> str:
     try:
@@ -151,9 +187,11 @@ def execute(command: str) -> str:
     except Exception as e:
         return f"Execution error: {str(e)}"
 
+
 # =========================================================
 # MAIN ENTRY
 # =========================================================
+
 
 def run(command: str) -> str:
     verdict = classify_command(command)
@@ -175,6 +213,7 @@ def run(command: str) -> str:
     result = execute(command)
     log(command, verdict, result)
     return result
+
 
 # =========================================================
 # TEST
