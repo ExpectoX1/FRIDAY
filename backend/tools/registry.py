@@ -1,5 +1,6 @@
 from typing import TypedDict, Callable, Optional
 
+from tools.web import search_web
 from tools.shell import run_shell
 from tools.files import read_file, write_file
 from tools.apps import open_app, close_app
@@ -31,7 +32,7 @@ TOOLS: dict[str, Tool] = {
     "search_web": {
         "description": "Searches the web for current information",
         "args": ["query"],
-        "function": None,
+        "function": search_web,
     },
     "read_file": {
         "description": "Reads the contents of a file",
