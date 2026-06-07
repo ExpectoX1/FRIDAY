@@ -5,6 +5,7 @@ from tools.shell import run_shell
 from tools.files import read_file, write_file
 from tools.apps import open_app, close_app
 from tools.datetime_tool import get_date_time
+from memory.retrieve import search_memory
 
 
 class Tool(TypedDict):
@@ -48,6 +49,11 @@ TOOLS: dict[str, Tool] = {
         "description": "Returns the current date and time",
         "args": [],
         "function": get_date_time,
+    },
+    "search_memory": {
+        "description": "Search FRIDAY's memory for facts about the user or any entity. Use this when the user references people, places, projects or preferences.",
+        "args": ["query"],
+        "function": search_memory,
     },
 }
 

@@ -38,6 +38,11 @@ Relationship mapping hints:
 - "supports/fans of" → SUPPORTS
 - "prefers/uses" → PREFERS or USES
 - "works on/building" → WORKS_ON
+
+CRITICAL DIRECTIONAL RULE:
+When extracting family or directional relationships, ensure the subject and object match the biological reality of the text.
+- If "A is the sister of B", the source must be the female entity. Format: (SisterName)-[SISTER_OF]->(Brother/SisterName).
+- Never make a male subject the source of a SISTER_OF or MOTHER_OF relationship.
 Output JSON delta only."""
 
 

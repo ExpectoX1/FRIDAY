@@ -8,6 +8,7 @@ from brain.llm import chat
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
 from logger import *
+from memory.store import store
 
 text_queue = queue.Queue()
 audio_queue = queue.Queue()
@@ -67,7 +68,6 @@ def handle_response(response: dict):
             text_queue.put(f"The {name} tool isn't wired up yet Sir.")
             return
 
-        # shell commands go through executor
         if name == "run_shell":
             result = executor_run(args.get("command", ""))
         else:
@@ -80,6 +80,14 @@ def handle_response(response: dict):
             text_queue.put(
                 f"Sir I need your approval to run: {command}. Should I proceed?"
             )
+            return
+
+        # memory results go back through LLM for natural response
+        if name == "search_memory" and result:
+            follow_up = chat(
+                f"Using this memory context, answer the user's last question naturally and concisely:\n{result}"
+            )
+            text_queue.put(follow_up.get("content", result))
             return
 
         text_queue.put(result if result else "Done Sir.")
@@ -126,6 +134,7 @@ async def assistant_loop():
         log_response(response)
         print(f"[RESPONSE] {response}")
         handle_response(response)
+        asyncio.create_task(store(f"Siddharth: {text}"))
 
         await asyncio.sleep(0.01)
 

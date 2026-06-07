@@ -17,31 +17,6 @@ class EntityLabel(str, Enum):
     EMOTION = "Emotion"
 
 
-RELATION_TYPES = Literal[
-    "LIVES_IN",
-    "SISTER_OF",
-    "BROTHER_OF",
-    "FRIEND_OF",
-    "WORKS_WITH",
-    "SUPPORTS",
-    "PREFERS",
-    "WORKS_ON",
-    "USES",
-    "HAS_HABIT",
-    "FEELS",
-    "WANTS_TO_BUY",
-    "SCHEDULED_AT",
-    "FOLLOWS",
-    "MEMBER_OF",
-    "LOCATED_IN",
-    "KNOWS",
-    "OWNS",
-    "DISLIKES",
-    "STUDIES",
-    "PLAYS",
-]
-
-
 class Entity(BaseModel):
     name: str = Field(description="Normalized name of the entity")
     label: EntityLabel = Field(description="Entity category")
@@ -50,8 +25,8 @@ class Entity(BaseModel):
 class Relationship(BaseModel):
     source: str = Field(description="Source entity name")
     target: str = Field(description="Target entity name")
-    relation: RELATION_TYPES = Field(
-        description="Must use exactly one of the allowed relation types"
+    relation: str = Field(
+        description="SNAKE_CASE relationship type. Be specific and meaningful e.g. WANTS_TO_BUY, LEARNING_TO_PLAY, TRAVELING_TO"
     )
     valid_from: Optional[str] = Field(
         None, description="Start date YYYY-MM-DD if mentioned"
@@ -61,10 +36,8 @@ class Relationship(BaseModel):
 class Contradiction(BaseModel):
     source: str
     target: str
-    relation: RELATION_TYPES
-    valid_to: Optional[str] = Field(
-        None, description="Date YYYY-MM-DD to invalidate this relationship"
-    )
+    relation: str = Field(description="SNAKE_CASE relation type to invalidate")
+    valid_to: Optional[str] = Field(None, description="Date YYYY-MM-DD to invalidate")
 
 
 class GraphDelta(BaseModel):
