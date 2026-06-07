@@ -1,8 +1,10 @@
-import re
-import ollama
-from neo4j import GraphDatabase
-from logger import log_system
 import logging
+import re
+import uuid
+import ollama
+from datetime import datetime
+from logger import log_system
+from neo4j import GraphDatabase
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
@@ -10,8 +12,49 @@ NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
 NEO4J_PASSWORD = "friday123"
 
+logger = logging.getLogger("FRIDAY.Memory")
+
+# =========================================================
+# DECAY RATES BY RELATION TYPE
+# =========================================================
+
+DECAY_RATES = {
+    # Identity — never decay
+    "SISTER_OF": 0.0,
+    "BROTHER_OF": 0.0,
+    "FATHER_OF": 0.0,
+    "MOTHER_OF": 0.0,
+    "FRIEND_OF": 0.0,
+    # Location — very slow
+    "LIVES_IN": 0.0,
+    "LOCATED_IN": 0.0,
+    # Affiliations — slow
+    "SUPPORTS": 0.2,
+    "MEMBER_OF": 0.2,
+    "WORKS_AT": 0.2,
+    # Preferences — slow
+    "PREFERS": 0.2,
+    "USES": 0.2,
+    "DISLIKES": 0.2,
+    # Projects — slow
+    "WORKS_ON": 0.2,
+    "CREATED": 0.2,
+    # Plans/intentions — medium
+    "WANTS_TO_BUY": 0.5,
+    "PLANS_TO": 0.5,
+    "LEARNING_TO": 0.5,
+    "TRAVELING_TO": 0.5,
+    # Emotions/events — fast
+    "FEELS": 0.8,
+    "ATTENDED": 0.8,
+    "SCHEDULED_AT": 0.8,
+}
+
+DEFAULT_DECAY_RATE = 0.3
+
 
 class MemoryWriter:
+
     def __init__(self):
         self.driver = GraphDatabase.driver(
             NEO4J_URI,
@@ -22,18 +65,18 @@ class MemoryWriter:
         self.driver.close()
 
     def get_existing_relation_types(self) -> list[str]:
-        """Fetch all relation types currently in the graph"""
-        with self.driver.session() as session:
-            result = session.run("MATCH ()-[r]->() RETURN DISTINCT type(r) AS rel")
-            return [record["rel"] for record in result]
+        try:
+            with self.driver.session() as session:
+                result = session.run("MATCH ()-[r]->() RETURN DISTINCT type(r) AS rel")
+                return [record["rel"] for record in result]
+        except Exception as e:
+            logger.error(f"Failed to fetch graph taxonomy: {e}")
+            return []
 
-    def consolidate_relation(self, proposed: str) -> str:
-        """Map proposed relation to closest existing type or accept as new"""
+    def consolidate_relation(self, proposed: str, existing: list[str]) -> str:
         proposed = re.sub(r"[^A-Z_]", "", proposed.upper().replace(" ", "_"))
         if not proposed:
             return "RELATED_TO"
-
-        existing = self.get_existing_relation_types()
 
         if not existing or proposed in existing:
             return proposed
@@ -46,19 +89,25 @@ Existing relation types in graph: {existing}
 Rules:
 1. If the proposed type is semantically equivalent or very similar to an existing one, return the existing one exactly.
 2. If it is genuinely different and adds new meaning, return the proposed type as-is.
-3. Reply with ONLY the relation type string in SNAKE_CASE. Nothing else.
+3. Reply with ONLY the relation type string in SNAKE_CASE. Nothing else, no markdown, no backticks.
 
 Examples:
 - PLANNING_TO_BUY vs [WANTS_TO_BUY] → WANTS_TO_BUY
-- DISLIKES vs [LIKES, SUPPORTS] → DISLIKES (genuinely different)
+- DISLIKES vs [LIKES, SUPPORTS] → DISLIKES
 - LIVES_AT vs [LIVES_IN] → LIVES_IN"""
 
         try:
             response = ollama.chat(
-                model="qwen2.5:3b", messages=[{"role": "user", "content": prompt}]
+                model="qwen2.5:3b",
+                messages=[{"role": "user", "content": prompt}],
             )
-            result = response.message.content.strip().upper().replace(" ", "_")
-            result = re.sub(r"[^A-Z_]", "", result)
+            raw = response.message.content.strip()
+            cleaned = raw.replace("`", "").replace("'", "").replace('"', "")
+            result = re.sub(r"[^A-Z_]", "", cleaned.upper().replace(" ", "_"))
+
+            if result not in existing and result != proposed:
+                return proposed
+
             return result if result else proposed
         except Exception:
             return proposed
@@ -76,6 +125,8 @@ Examples:
             "father",
             "mother",
             "boss",
+            "dad",
+            "mom",
         }
         has_rel_keyword = any(k in lower_entities for k in relationship_keywords)
 
@@ -102,11 +153,20 @@ Examples:
             result = session.run(query, entities=lower_entities)
             return [record.data() for record in result]
 
-    def apply_delta(self, delta: dict):
+    def apply_delta(self, delta: dict, conversation_id: str = None):
+        if conversation_id is None:
+            conversation_id = str(uuid.uuid4())
+
+        now = datetime.now().isoformat()
+
+        # cache existing types once for the whole batch
+        existing_types = self.get_existing_relation_types()
+
         with self.driver.session() as session:
+
             # 1. Invalidate contradictions
             for c in delta.get("contradictions", []):
-                rel_type = self.consolidate_relation(c["relation"])
+                rel_type = self.consolidate_relation(c["relation"], existing_types)
                 if not rel_type:
                     continue
                 query = f"""
@@ -139,23 +199,58 @@ Examples:
                 session.run(query, name=e["name"])
                 log_system("memory", f"Entity: {e['name']} ({label})")
 
-            # 3. Create new relationships with taxonomy guard
+            # 3. Create new relationships with full metadata
             for r in delta.get("new_relationships", []):
-                rel_type = self.consolidate_relation(r["relation"])
+                rel_type = self.consolidate_relation(r["relation"], existing_types)
                 if not rel_type:
                     continue
+
+                decay_rate = DECAY_RATES.get(rel_type, DEFAULT_DECAY_RATE)
+                confidence = r.get("confidence", 0.85)
+
                 query = f"""
                 MERGE (s {{name: $source}})
                 MERGE (t {{name: $target}})
                 MERGE (s)-[rel:{rel_type}]->(t)
-                ON CREATE SET rel.valid_from = $valid_from, rel.valid_to = null
+                ON CREATE SET
+                    rel.valid_from = $valid_from,
+                    rel.valid_to = null,
+                    rel.importance = 0.5,
+                    rel.decay_rate = $decay_rate,
+                    rel.confidence = $confidence,
+                    rel.source_id = $source_id,
+                    rel.mention_count = 1,
+                    rel.created_at = $created_at,
+                    rel.last_seen = timestamp()
+                ON MATCH SET
+                    rel.importance = CASE
+                        WHEN rel.importance + 0.1 > 1.0 THEN 1.0
+                        ELSE rel.importance + 0.1 END,
+                    rel.mention_count = coalesce(rel.mention_count, 1) + 1,
+                    rel.confidence = $confidence,
+                    rel.last_seen = timestamp()
                 """
                 session.run(
                     query,
                     source=r["source"],
                     target=r["target"],
                     valid_from=r.get("valid_from"),
+                    decay_rate=decay_rate,
+                    confidence=confidence,
+                    source_id=conversation_id,
+                    created_at=now,
                 )
                 log_system(
-                    "memory", f"Relationship: {r['source']} -{rel_type}-> {r['target']}"
+                    "memory",
+                    f"Relationship: {r['source']} -{rel_type}-> {r['target']} "
+                    f"(importance: 0.5, confidence: {confidence}, decay: {decay_rate})",
                 )
+
+                if rel_type not in existing_types:
+                    existing_types.append(rel_type)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()

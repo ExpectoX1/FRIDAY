@@ -28,21 +28,27 @@ RULES - follow exactly:
 1. If current state is EMPTY, only add to new_entities and new_relationships. Never add contradictions.
 2. Only add to contradictions if the EXACT relationship exists in current state above AND the user explicitly said it changed.
 3. Always use "Siddharth" as the source entity, never "I", "User", or "user profile".
-4. Keep relationship types from the allowed list only.
-5. Be conservative — only extract facts clearly and explicitly stated.
-
+4. Be conservative — only extract facts clearly and explicitly stated.
+5. New facts about activities, goals, events and emotions should ALWAYS be added to new_relationships even if they don't contradict anything.
+6. Emotional states should be stored as FEELS relationships e.g. (Siddharth)-[FEELS]->(stressed).
+7. Activities and training should be stored e.g. (Siddharth)-[TRAINING_FOR]->(Marathon in Berlin).
+8. Intentions and plans should be stored e.g. (Siddharth)-[WANTS_TO_BUY]->(Car).
 
 Relationship mapping hints:
 - "sister/brother" → SISTER_OF or BROTHER_OF
 - "lives in/moved to" → LIVES_IN
 - "supports/fans of" → SUPPORTS
-- "prefers/uses" → PREFERS or USES
+- "prefers/uses/loves" → PREFERS or USES
 - "works on/building" → WORKS_ON
+- "feels/stressed/excited/happy" → FEELS
+- "training/practicing/learning" → TRAINING_FOR or LEARNING_TO
+- "wants to/planning to/thinking of buying" → WANTS_TO_BUY or PLANS_TO
 
 CRITICAL DIRECTIONAL RULE:
 When extracting family or directional relationships, ensure the subject and object match the biological reality of the text.
-- If "A is the sister of B", the source must be the female entity. Format: (SisterName)-[SISTER_OF]->(Brother/SisterName).
+- If "A is the sister of B", the source must be the female entity.
 - Never make a male subject the source of a SISTER_OF or MOTHER_OF relationship.
+
 Output JSON delta only."""
 
 
