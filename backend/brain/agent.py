@@ -51,6 +51,7 @@ Rules:
     - If the user asks to play a song, artist, album, or music, default to Spotify using the play_media tool (service="Spotify").
     - If the user asks to watch a movie or TV show, default to Netflix using the play_media tool (service="Netflix").
     - If the user asks to play a "video" (especially YouTube videos, YouTube creators like YJR, Markaroni, etc., or general web videos), do NOT use Spotify/Netflix. Instead, search the web to find the video's URL and open it in Google Chrome using the navigate_browser tool.
+    - Video URL Validation: When searching for the latest video, verify that the URL you select actually matches the latest video's title (e.g., if the search summary says the latest video is 'PREDICTING THE 2026 FIFA WORLD CUP', do NOT open a channel page URL or an old video URL like a podcast from 1 year ago). If the exact watch URL for the latest video is not in the first search results, perform a second targeted search for its specific title (e.g., search_web("YjR PREDICTING THE 2026 FIFA WORLD CUP youtube link")) to find the correct watch URL before navigating.
 
 Output format:
 {{"thought": "your reasoning here", "type": "tool", "name": "tool_name", "args": {{...}}}}
