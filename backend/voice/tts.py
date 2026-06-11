@@ -17,8 +17,11 @@ def clean_for_tts(text: str) -> str:
 
 def apply_fade(audio: np.ndarray, fade_ms: int = 10) -> np.ndarray:
     fade_samples = int(24000 * fade_ms / 1000)
-    fade_in = np.linspace(0, 1, fade_samples)
-    fade_out = np.linspace(1, 0, fade_samples)
+    # Guard short chunks: a fade longer than the clip would corrupt it.
+    if audio.shape[0] < fade_samples * 2:
+        return audio
+    fade_in = np.linspace(0, 1, fade_samples, dtype=np.float32)
+    fade_out = np.linspace(1, 0, fade_samples, dtype=np.float32)
     audio[:fade_samples] *= fade_in
     audio[-fade_samples:] *= fade_out
     return audio
@@ -38,11 +41,15 @@ def generate(text: str):
 def play(audio: np.ndarray):
     if audio is None:
         return
+    # Own a contiguous float32 buffer so the in-place fade is safe and the audio
+    # backend doesn't have to re-copy/convert mid-stream.
+    audio = np.ascontiguousarray(audio, dtype=np.float32)
     max_val = np.max(np.abs(audio))
     if max_val > 0:
         audio = audio / max_val * 0.95
     audio = apply_fade(audio)
-    sd.stop()
-    sd.play(audio, samplerate=24000)
+    # latency="high" requests a larger output buffer. The playback thread runs
+    # while gemma4 saturates the machine, so a small buffer starves and crackles;
+    # a high-latency buffer rides through the inference load cleanly.
+    sd.play(audio, samplerate=24000, blocking=False, latency="high")
     sd.wait()
-    time.sleep(0.05)  # 50ms buffer between chunks
