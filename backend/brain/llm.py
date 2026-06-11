@@ -6,44 +6,8 @@ from tools.registry import get_tools_spec
 history = []
 MAX_HISTORY = 4
 
-# Schema for agent loop — includes thought and done signal
-AGENT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "thought": {"type": "string"},
-        "type": {"type": "string", "enum": ["reply", "tool"]},
-        "name": {"type": "string"},
-        "content": {"type": "string"},
-        "args": {"type": "object"},
-        "done": {"type": "boolean"},
-    },
-    "required": ["thought", "type"],
-}
-
 MODEL = "gemma4:latest"  # supports native Ollama tool calling (gemma3 does not)
 ROUTER_MODEL = "qwen2.5:3b"  # small/fast model for SIMPLE/COMPLEX routing
-
-
-def normalize_response(data: dict) -> dict:
-    from tools.registry import TOOLS
-
-    if data.get("type") in TOOLS:
-        return {
-            "type": "tool",
-            "name": data.get("type"),
-            "args": {k: v for k, v in data.items() if k != "type"},
-        }
-    return data
-
-
-def clean_json(raw: str) -> str:
-    raw = raw.strip()
-    if "```json" in raw:
-        raw = raw.split("```json")[1].split("```")[0].strip()
-    elif "```" in raw:
-        raw = raw.split("```")[1].split("```")[0].strip()
-    raw = raw.replace('"""', '"').replace("'''", "'")
-    return raw.strip()
 
 
 def chat(message: str) -> dict:
@@ -82,29 +46,37 @@ def chat(message: str) -> dict:
     return {"type": "reply", "content": content}
 
 
-def agent_chat(message: str, system_override: str = None) -> dict:
+def agent_chat(messages: list) -> dict:
     """
-    Agent loop chat — uses AGENT_SCHEMA with thought + done fields.
-    Does NOT update conversation history (agent steps are internal).
-    """
-    system = system_override or get_personality()
+    Agent loop chat — native tool calling over a real message list.
 
+    The caller owns the conversation (system, user, assistant tool_calls, and
+    tool-result turns). We return a uniform dict the loop can act on:
+      tool  -> {"type":"tool","name","args","thought","raw_message"}
+      reply -> {"type":"reply","content","thought"}
+    `raw_message` is the assistant turn to append back into `messages` so the
+    model sees its own prior tool call on the next iteration.
+    """
     response = ollama.chat(
         model=MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": message},
-        ],
-        format=AGENT_SCHEMA,
+        messages=messages,
+        tools=get_tools_spec(),
     )
 
-    raw = response.message.content.strip()
+    msg = response.message
+    thought = (msg.content or "").strip()
 
-    try:
-        data = json.loads(clean_json(raw))
-        return normalize_response(data)
-    except json.JSONDecodeError:
-        return {"thought": "Parse error", "type": "reply", "content": raw}
+    if msg.tool_calls:
+        call = msg.tool_calls[0].function
+        return {
+            "type": "tool",
+            "name": call.name,
+            "args": dict(call.arguments),
+            "thought": thought,
+            "raw_message": msg,
+        }
+
+    return {"type": "reply", "content": thought, "thought": thought}
 
 
 COMPLEX_SIGNALS = [
