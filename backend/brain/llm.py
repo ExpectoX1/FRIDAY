@@ -99,6 +99,10 @@ COMPLEX_SIGNALS = [
     "research", "find and", "open and", "search and", "write and", "create and",
     "help me", "figure out", "work out", "go to", "navigate to",
     "open chrome and", "sort", "organize", "clean", "tidy", "rename",
+    # Discovery intents — need a web search before acting, so they must run in
+    # the agent loop (search_web -> navigate_browser), never single-shot.
+    # Checked before SIMPLE_SIGNALS so "open the stream" beats the "open " pin.
+    "stream", "livestream", "is live", "video",
 ]
 
 # Obvious single-step intents — force single-shot so casual phrasing like
