@@ -251,6 +251,9 @@ def run_manual():
 
     loop = asyncio.get_event_loop()
 
+    # Global cross-turn conversational context session list
+    history = []
+
     # Pending confirmation state
     pending_confirmation = {"active": False, "state": None}
 
@@ -304,13 +307,17 @@ def run_manual():
                 pending_confirmation = {"active": False, "state": None}
 
                 agent_start = time.perf_counter()
+                # Pass active history state through confirmation resumption
                 response = loop.run_until_complete(
-                    run_agent(saved_state["goal"], resume_state=saved_state)
+                    run_agent(
+                        saved_state["goal"],
+                        resume_state=saved_state,
+                        chat_history=history,
+                    )
                 )
                 agent_latency = (time.perf_counter() - agent_start) * 1000
                 print(f"⏱️  [Metrics] Total Agent Loop Runtime: {agent_latency:.2f}ms")
 
-                # Handle nested confirmations
                 if response.get("type") == "needs_confirmation":
                     pending_confirmation["active"] = True
                     pending_confirmation["state"] = response.get("pending_state")
@@ -319,6 +326,9 @@ def run_manual():
                     )
                 else:
                     print(f"💬 FRIDAY: {response.get('content', 'Done.')}\n")
+                    history.append(
+                        {"role": "assistant", "content": response.get("content", "")}
+                    )
 
                 log_response(response)
                 loop.run_until_complete(store(f"User: {user_input}"))
@@ -331,15 +341,20 @@ def run_manual():
                 continue
 
             else:
-                # Unrelated input — clear pending state
+                # Unrelated input — clear out stale state
                 pending_confirmation = {"active": False, "state": None}
 
         # ── Normal routing ────────────────────────────────────────
         if _is_complex_task(user_input):
             print("🧠 [Routing] Sent to Agent Loop Core...")
 
+            # Append the incoming turn to history before the core execution runs
+            history.append({"role": "user", "content": user_input})
+
             agent_start = time.perf_counter()
-            response = loop.run_until_complete(run_agent(user_input))
+            response = loop.run_until_complete(
+                run_agent(user_input, chat_history=history)
+            )
             agent_latency = (time.perf_counter() - agent_start) * 1000
 
             print(f"⏱️  [Metrics] Total Agent Loop Runtime: {agent_latency:.2f}ms")
@@ -350,11 +365,21 @@ def run_manual():
                 print(f"💬 FRIDAY: {response.get('content', 'Should I proceed?')}\n")
             else:
                 print(f"💬 FRIDAY: {response.get('content', 'Done.')}\n")
+                history.append(
+                    {"role": "assistant", "content": response.get("content", "")}
+                )
         else:
+            # Single-Shot Core Route
             llm_start = time.perf_counter()
             response = chat(user_input)
             llm_latency = (time.perf_counter() - llm_start) * 1000
             handle_manual_single_shot(response, llm_latency)
+
+            # Synchronize history context mapping for basic single shots too
+            history.append({"role": "user", "content": user_input})
+            history.append(
+                {"role": "assistant", "content": response.get("content") or ""}
+            )
 
         log_response(response)
         loop.run_until_complete(store(f"User: {user_input}"))

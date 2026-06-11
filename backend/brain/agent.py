@@ -57,6 +57,7 @@ Output format:
 async def run_agent(
     user_utterance: str,
     resume_state: dict = None,
+    chat_history: list = None,
 ) -> dict:
     """
     Orchestrates the multi-step Plan-Execute-Observe loop.
@@ -129,7 +130,7 @@ async def run_agent(
         system_prompt = _build_agent_system_prompt()
         start_iteration = 1
 
-        # Memory context injection
+        # Keep your existing memory context injection logic here...
         context_summary = ""
         try:
             memory_tool = get_tool("search_memory")
@@ -143,11 +144,21 @@ async def run_agent(
         except Exception as e:
             log_error(f"Memory lookup failed: {e}")
 
-        base_prompt = f"""{context_summary}
-User Goal: "{user_utterance}"
+        # ⚡ NEW: Parse the incoming session history so the agent understands "as well"
+        session_context = ""
+        if chat_history:
+            # Grab the last 4 turns to keep it lightweight but contextually clear
+            recent_turns = chat_history[-4:]
+            formatted_turns = "\n".join(
+                [f"* {msg['role'].upper()}: {msg['content']}" for msg in recent_turns]
+            )
+            session_context = f"[Recent Chat Session History]:\n{formatted_turns}\n"
 
-Complete this goal step by step. Check your execution history before each action.
-If you need to find a project path, use search_memory first, then ls ~/Projects."""
+        # Update base_prompt to ingest the session context strings
+        base_prompt = f"""{session_context}{context_summary}
+            User Goal: "{user_utterance}"
+            Complete this goal step by step. Check your execution history and the recent session history before taking action.
+            If the goal references a previous action implicitly (e.g. "push as well", "undo that"), look at the recent session history to identify the target project or file path."""
 
     # ── Agent loop ───────────────────────────────────────────────────────
     for iteration in range(start_iteration, MAX_ITERATIONS + 1):
