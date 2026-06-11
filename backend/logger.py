@@ -90,7 +90,8 @@ def log_user(text: str):
 
 def log_response(response):
     if isinstance(response, (dict, list)):
-        response = json.dumps(response, indent=2, ensure_ascii=False)
+        # default=str so any non-serializable payload logs instead of crashing.
+        response = json.dumps(response, indent=2, ensure_ascii=False, default=str)
     logger.info(f"[FRIDAY] {response}")
 
 

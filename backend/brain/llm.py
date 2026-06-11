@@ -68,12 +68,20 @@ def agent_chat(messages: list) -> dict:
 
     if msg.tool_calls:
         call = msg.tool_calls[0].function
+        args = dict(call.arguments)
+        # Plain-dict form of the assistant turn so `messages` stays fully
+        # JSON-serializable (it gets stored in pending_state and logged).
+        raw_message = {
+            "role": "assistant",
+            "content": thought,
+            "tool_calls": [{"function": {"name": call.name, "arguments": args}}],
+        }
         return {
             "type": "tool",
             "name": call.name,
-            "args": dict(call.arguments),
+            "args": args,
             "thought": thought,
-            "raw_message": msg,
+            "raw_message": raw_message,
         }
 
     return {"type": "reply", "content": thought, "thought": thought}
