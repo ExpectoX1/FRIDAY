@@ -61,7 +61,7 @@ Rules:
     - Song, artist, album, or music → play_media with service="Spotify".
     - Movie or TV show → play_media with service="Netflix".
     - A "video" (YouTube videos, creators like YJR, Markaroni, general web videos) → do NOT use Spotify/Netflix. search_web for the video URL, then open it with navigate_browser.
-    - Video URL Validation: verify the URL matches the latest video's actual title. If the exact watch URL isn't in the first results, do a second targeted search for its specific title before navigating.
+    - Video URL Validation — MANDATORY: the URL you pass to navigate_browser MUST be a direct watch link of the form https://www.youtube.com/watch?v=<id>. NEVER navigate to a channel page, an @handle page, a /videos page, or a /results search page — those do not auto-play. First identify the latest video's exact title from the search summary, then confirm a matching watch?v= URL appears in the results. If no watch?v= URL for that exact title is present, run a second search like search_web("<creator> <exact title> youtube watch link") and only navigate once you have the watch?v= URL.
 """
     )
 

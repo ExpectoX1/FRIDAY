@@ -9,6 +9,11 @@ MAX_HISTORY = 4
 MODEL = "gemma4:latest"  # supports native Ollama tool calling (gemma3 does not)
 ROUTER_MODEL = "qwen2.5:3b"  # small/fast model for SIMPLE/COMPLEX routing
 
+# Keep models resident between calls. We alternate brain (gemma4) and router
+# (qwen3b) every turn; without this, Ollama can evict one to load the other,
+# paying a multi-second reload each time. A long TTL pins both warm.
+KEEP_ALIVE = "30m"
+
 
 def chat(message: str) -> dict:
     """Single-shot chat — used for simple queries and tool result interpretation.
@@ -25,6 +30,7 @@ def chat(message: str) -> dict:
         messages=[{"role": "system", "content": get_personality(native_tools=True)}]
         + trimmed,
         tools=get_tools_spec(),
+        keep_alive=KEEP_ALIVE,
     )
 
     msg = response.message
@@ -61,6 +67,7 @@ def agent_chat(messages: list) -> dict:
         model=MODEL,
         messages=messages,
         tools=get_tools_spec(),
+        keep_alive=KEEP_ALIVE,
     )
 
     msg = response.message
@@ -143,6 +150,7 @@ def is_complex(message: str) -> bool:
                 },
                 "required": ["classification"],
             },
+            keep_alive=KEEP_ALIVE,
         )
         data = json.loads(response.message.content.strip())
         return data.get("classification") == "COMPLEX"
