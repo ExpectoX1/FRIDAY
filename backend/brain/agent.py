@@ -10,9 +10,35 @@ from logger import log_system, log_tool, log_result, log_error
 MAX_ITERATIONS = 10
 MAX_RETRIES_PER_TOOL = 3
 
+# Tools that are almost always the FINAL action of a goal. When one succeeds we
+# return its own result message instead of paying another full inference just to
+# phrase a summary. Deliberately excludes chain-starters like open_app (often
+# "open chrome AND go to ...") and intermediate tools (search_*, read_file,
+# run_shell) where the model genuinely needs to reason about the result.
+TERMINAL_TOOLS = {"play_media", "navigate_browser", "get_date_time"}
+
+
+def _tool_message(result) -> str:
+    """Extract a user-facing line from a tool result."""
+    if isinstance(result, dict):
+        return result.get("message") or result.get("content") or "Done, Sir."
+    return str(result) if result else "Done, Sir."
+
+# Built once per process. The agent system prompt is static (personality +
+# tools list + cwd), so rebuilding it on every task — and re-deriving the
+# tools prompt each time — was pure overhead.
+_AGENT_SYSTEM_PROMPT: str | None = None
+
+
+def _get_agent_system_prompt() -> str:
+    global _AGENT_SYSTEM_PROMPT
+    if _AGENT_SYSTEM_PROMPT is None:
+        _AGENT_SYSTEM_PROMPT = _build_agent_system_prompt()
+    return _AGENT_SYSTEM_PROMPT
+
 
 def _build_agent_system_prompt() -> str:
-    base = get_personality()
+    base = get_personality(native_tools=True)
     cwd = os.getcwd()
     return (
         base
@@ -20,7 +46,9 @@ def _build_agent_system_prompt() -> str:
 
 ━━━ AGENT MODE — ACTIVE ━━━
 
-You are now operating in multi-step agent mode.
+You are operating in multi-step agent mode. You call tools natively; each tool
+result comes back as a tool message. Work one step at a time, and when the goal
+is finished, reply in plain natural language (no tool call) with a short summary.
 
 Environment:
 * Current working directory: {cwd}
@@ -38,24 +66,17 @@ Discovery strategy:
 * If you need file locations → run_shell("ls") or read_file
 
 Rules:
-1. Always output a "thought" field explaining your reasoning before acting.
-2. Execute tasks one step at a time.
-3. After each tool result, reason about whether the goal is complete.
-4. When complete, output type="reply" with a natural summary.
-5. Never repeat a tool call that already succeeded.
-6. If a tool fails repeatedly, stop and ask for help.
-7. In your thoughts, refer to the user as "Sir", "Boss", or "the user" — never by name.
-8. In execution history, always check the "success" field. If success=false, that step needs to be fixed before moving on. Never assume a step succeeded unless success=true.
-9. Shell metacharacters (&&, ||, ;, |, >, >>, <, `, $() etc.) are BLOCKED in run_shell for safety. You CANNOT chain multiple commands using semicolons (;) or &&. Because you have a limit of 10 iterations, performing batch operations file-by-file (like moving 10 files one-by-one) will hit the step limit and fail. Therefore, for any batch file operations (such as sorting a directory, moving/renaming/deleting multiple files, or handling files with complex names), you MUST write a Python script using write_file to the workspace (under /Users/siddharthkumar/FRIDAY/workspace/your_script.py) and execute it via a single command: run_shell("python3 /Users/siddharthkumar/FRIDAY/workspace/your_script.py").
-10. Media Routing Rules:
-    - If the user asks to play a song, artist, album, or music, default to Spotify using the play_media tool (service="Spotify").
-    - If the user asks to watch a movie or TV show, default to Netflix using the play_media tool (service="Netflix").
-    - If the user asks to play a "video" (especially YouTube videos, YouTube creators like YJR, Markaroni, etc., or general web videos), do NOT use Spotify/Netflix. Instead, search the web to find the video's URL and open it in Google Chrome using the navigate_browser tool.
-    - Video URL Validation: When searching for the latest video, verify that the URL you select actually matches the latest video's title (e.g., if the search summary says the latest video is 'PREDICTING THE 2026 FIFA WORLD CUP', do NOT open a channel page URL or an old video URL like a podcast from 1 year ago). If the exact watch URL for the latest video is not in the first search results, perform a second targeted search for its specific title (e.g., search_web("YjR PREDICTING THE 2026 FIFA WORLD CUP youtube link")) to find the correct watch URL before navigating.
-
-Output format:
-{{"thought": "your reasoning here", "type": "tool", "name": "tool_name", "args": {{...}}}}
-{{"thought": "goal complete", "type": "reply", "content": "natural response"}}
+1. Execute tasks one step at a time; inspect each tool result before the next step.
+2. Never repeat a tool call that already succeeded. When the goal is done, reply with text — do not call another tool.
+3. If a tool result indicates an error, fix the cause before moving on. If a tool fails repeatedly, stop and ask for help in plain text.
+4. Refer to the user as "Sir", "Boss", or "the user" — never by name.
+5. Shell metacharacters (&&, ||, ;, |, >, >>, <, `, $() etc.) are BLOCKED in run_shell. You CANNOT chain commands. For any batch file operation (sorting a directory, moving/renaming/deleting multiple files, complex names), write a Python script via write_file to /Users/siddharthkumar/FRIDAY/workspace/your_script.py and run it with a single run_shell("python3 /Users/siddharthkumar/FRIDAY/workspace/your_script.py").
+6. Media Routing Rules:
+    - Song, artist, album, or music → play_media with service="Spotify".
+    - Movie or TV show → play_media with service="Netflix".
+    - A "video" (YouTube videos, creators like YJR, Markaroni, general web videos) → do NOT use Spotify/Netflix. search_web for the video URL, then open it with navigate_browser.
+    - LIVE STREAMS ("X is live", "open the stream", "open X's livestream"): do NOT pick a watch?v= URL from search results — those are frequently OLD recordings (VODs), not the current broadcast. Instead navigate to https://www.youtube.com/@<handle>/live which auto-redirects to the creator's CURRENT live stream. Get the exact @handle from search if you don't know it (e.g. @Markaroni → https://www.youtube.com/@Markaroni/live). This /live rule is the ONLY case where an @handle URL is allowed.
+    - Video URL Validation (non-live videos) — MANDATORY: the URL you pass to navigate_browser MUST be a direct watch link of the form https://www.youtube.com/watch?v=<id>. NEVER navigate to a channel page, an @handle page, a /videos page, or a /results search page — those do not auto-play. First identify the latest video's exact title from the search summary, then confirm a matching watch?v= URL appears in the results. If no watch?v= URL for that exact title is present, run a second search like search_web("<creator> <exact title> youtube watch link") and only navigate once you have the watch?v= URL.
 """
     )
 
@@ -66,28 +87,30 @@ async def run_agent(
     chat_history: list = None,
 ) -> dict:
     """
-    Orchestrates the multi-step Plan-Execute-Observe loop.
+    Orchestrates the multi-step Plan-Execute-Observe loop using native tool
+    calling. The conversation lives in a real `messages` list (system, user,
+    assistant-with-tool_calls, tool-result), so the model sees its own prior
+    actions structurally instead of via a stringified history blob.
 
-    resume_state: if provided, resumes from a pending confirmation.
-    Format: {
-        "goal": str,
-        "confirmed_command": str,
-        "history": list,
-        "retry_counts": dict,
-        "system_prompt": str,
-        "base_prompt": str,
-    }
+    resume_state: if provided, resumes from a pending confirmation. Format:
+        {goal, confirmed_command, messages, retry_counts, succeeded}
     """
+    SILENT_FAILURE_MARKERS = [
+        "Changes not staged",
+        "no changes added",
+        "nothing to commit",
+        "nothing added to commit",
+        "Untracked files",
+    ]
+
     # ── Resuming from confirmation ──────────────────────────────────────
     if resume_state:
         log_system("agent", "Resuming from confirmed command.")
         goal = resume_state["goal"]
         confirmed_command = resume_state["confirmed_command"]
-        agent_history = resume_state["history"]
+        messages = resume_state["messages"]
         retry_counts = resume_state["retry_counts"]
-        system_prompt = resume_state["system_prompt"]
-        base_prompt = resume_state["base_prompt"]
-        start_iteration = len(agent_history) + 1
+        succeeded = set(resume_state.get("succeeded", []))
 
         log_system("agent", f"Executing confirmed: {confirmed_command}")
         try:
@@ -98,45 +121,26 @@ async def run_agent(
 
         log_result("agent", tool_result)
 
-        # Detect silent failures — git returned status instead of commit success
         result_str = str(tool_result)
-        silent_failure = any(
-            x in result_str
-            for x in [
-                "Changes not staged",
-                "no changes added",
-                "nothing to commit",
-                "nothing added to commit",
-                "Untracked files",
-            ]
-        )
+        silent_failure = any(x in result_str for x in SILENT_FAILURE_MARKERS)
+        content = result_str
+        if silent_failure:
+            content += "\n[NOTE] Nothing was staged — run git add first."
+        else:
+            succeeded.add(f"run_shell:{json.dumps({'command': confirmed_command}, sort_keys=True)}")
 
-        agent_history.append(
-            {
-                "step": start_iteration,
-                "action": "run_shell",
-                "args": {"command": confirmed_command},
-                "result": result_str[:4000],
-                "success": not silent_failure,
-                "note": (
-                    "FAILED — nothing was staged, need to run git add first"
-                    if silent_failure
-                    else "success"
-                ),
-            }
-        )
+        # The assistant tool_call (run_shell) is already the last assistant turn
+        # in `messages`; append its result so the conversation stays well-formed.
+        messages.append({"role": "tool", "tool_name": "run_shell", "content": content[:4000]})
 
-        start_iteration += 1
     # ── Fresh start ─────────────────────────────────────────────────────
     else:
         log_system("agent", f"Goal: '{user_utterance}'")
         goal = user_utterance
-        agent_history = []
         retry_counts = {}
-        system_prompt = _build_agent_system_prompt()
-        start_iteration = 1
+        succeeded = set()
+        system_prompt = _get_agent_system_prompt()
 
-        # Keep your existing memory context injection logic here...
         context_summary = ""
         try:
             memory_tool = get_tool("search_memory")
@@ -150,56 +154,49 @@ async def run_agent(
         except Exception as e:
             log_error(f"Memory lookup failed: {e}")
 
-        # ⚡ NEW: Parse the incoming session history so the agent understands "as well"
         session_context = ""
         if chat_history:
-            # Grab the last 4 turns to keep it lightweight but contextually clear
             recent_turns = chat_history[-4:]
             formatted_turns = "\n".join(
                 [f"* {msg['role'].upper()}: {msg['content']}" for msg in recent_turns]
             )
             session_context = f"[Recent Chat Session History]:\n{formatted_turns}\n"
 
-        # Update base_prompt to ingest the session context strings
-        base_prompt = f"""{session_context}{context_summary}
+        user_goal_prompt = f"""{session_context}{context_summary}
             User Goal: "{user_utterance}"
-            Complete this goal step by step. Check your execution history and the recent session history before taking action.
-            If the goal references a previous action implicitly (e.g. "push as well", "undo that"), look at the recent session history to identify the target project or file path."""
+            Complete this goal step by step. If the goal references a previous action implicitly (e.g. "push as well", "undo that"), use the recent session history to identify the target project or file path."""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_goal_prompt},
+        ]
 
     # ── Agent loop ───────────────────────────────────────────────────────
-    for iteration in range(start_iteration, MAX_ITERATIONS + 1):
+    for iteration in range(1, MAX_ITERATIONS + 1):
         log_system("agent", f"Iteration {iteration}/{MAX_ITERATIONS}")
 
-        current_prompt = base_prompt
-        if agent_history:
-            history_str = "\n".join([json.dumps(h) for h in agent_history])
-            current_prompt += (
-                f"\n\n[Execution History]:\n{history_str}\n\nWhat is your next action?"
-            )
-
-        response = await asyncio.to_thread(agent_chat, current_prompt, system_prompt)
+        response = await asyncio.to_thread(agent_chat, messages)
 
         thought = response.get("thought", "")
-        rtype = response.get("type", "reply")
-        done = response.get("done", False)
+        if thought:
+            log_system("agent", f"Thought: {thought}")
 
-        log_system("agent", f"Thought: {thought}")
-
-        if rtype == "reply" or done:
+        if response.get("type") == "reply":
             log_system("agent", "Goal complete.")
-            return {
-                "type": "reply",
-                "content": response.get("content")
-                or response.get("message")
-                or "Done Sir.",
-            }
-
-        if rtype != "tool":
-            log_error(f"Unexpected response type: {rtype}")
-            break
+            return {"type": "reply", "content": response.get("content") or "Done Sir."}
 
         tool_name = response.get("name")
         tool_args = response.get("args", {})
+
+        # Append the assistant's tool-call turn so the model sees it next round.
+        messages.append(response["raw_message"])
+
+        # Deterministic loop guard: identical to an already-succeeded call means
+        # the model is stuck re-running a completed action — finish instead.
+        call_signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
+        if call_signature in succeeded:
+            log_system("agent", "Duplicate of a succeeded call — completing goal.")
+            return {"type": "reply", "content": thought or "Done, Sir."}
 
         log_tool("agent", tool_name, tool_args)
 
@@ -222,6 +219,23 @@ async def run_agent(
             log_error(f"Tool {tool_name} crashed: {e}")
 
         log_result("agent", tool_result)
+
+        # Confirmation required — pause and return state for resumption.
+        if isinstance(tool_result, str) and tool_result.startswith(
+            "NEEDS_CONFIRMATION:"
+        ):
+            command = tool_result.replace("NEEDS_CONFIRMATION:", "").strip()
+            return {
+                "type": "needs_confirmation",
+                "content": f"Sir, I need your approval to run: {command}. Should I proceed?",
+                "pending_state": {
+                    "goal": goal,
+                    "confirmed_command": command,
+                    "messages": messages,
+                    "retry_counts": retry_counts,
+                    "succeeded": list(succeeded),
+                },
+            }
 
         is_error = isinstance(tool_result, str) and any(
             x in tool_result.lower()
@@ -247,38 +261,21 @@ async def run_agent(
                 }
         else:
             retry_counts[tool_name] = 0
+            succeeded.add(call_signature)
 
-        # Confirmation required — return state for resumption
-        if isinstance(tool_result, str) and tool_result.startswith(
-            "NEEDS_CONFIRMATION:"
-        ):
-            command = tool_result.replace("NEEDS_CONFIRMATION:", "").strip()
-            return {
-                "type": "needs_confirmation",
-                "content": f"Sir, I need your approval to run: {command}. Should I proceed?",
-                "pending_state": {
-                    "goal": goal,
-                    "confirmed_command": command,
-                    "history": agent_history,
-                    "retry_counts": retry_counts,
-                    "system_prompt": system_prompt,
-                    "base_prompt": base_prompt,
-                },
-            }
+            # Terminal tool succeeded → the goal is done. Skip the extra
+            # summarization inference and reply from the tool result directly.
+            if tool_name in TERMINAL_TOOLS:
+                log_system("agent", f"Terminal tool '{tool_name}' done — completing.")
+                return {"type": "reply", "content": _tool_message(tool_result)}
 
         truncated_result = str(tool_result)[:4000]
         if len(str(tool_result)) > 4000:
             truncated_result += "... [Truncated]"
 
-        # FIX: Explicitly appending the tracking boolean for the LLM to inspect
-        agent_history.append(
-            {
-                "step": iteration,
-                "action": tool_name,
-                "args": tool_args,
-                "result": truncated_result,
-                "success": not is_error,
-            }
+        # Feed the tool result back as a proper tool message.
+        messages.append(
+            {"role": "tool", "tool_name": tool_name, "content": truncated_result}
         )
 
     log_system("agent", "Max iterations reached.")

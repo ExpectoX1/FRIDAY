@@ -118,7 +118,7 @@ def handle_manual_single_shot(response: dict, llm_latency: float):
             print(f"🧠 [Memory Retrieval] {result}")
             mem_start = time.perf_counter()
             follow_up = chat(
-                f"Using this memory context, answer the user's last question naturally and concisely:\n{result}"
+                f"Based on our conversation and this memory context, give a natural, concise spoken answer to what the user just asked. Do NOT ask what they want — just answer directly.\n\nMemory:\n{result}"
             )
             mem_lat = (time.perf_counter() - mem_start) * 1000
             print(f"⏱️  [Metrics] Context Synthesis Latency: {mem_lat:.2f}ms")
@@ -129,7 +129,7 @@ def handle_manual_single_shot(response: dict, llm_latency: float):
             print(f"🌐 [Web Search] {result}")
             web_start = time.perf_counter()
             follow_up = chat(
-                f"Using these search results, answer the user's last question naturally:\n{result}"
+                f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
             )
             web_lat = (time.perf_counter() - web_start) * 1000
             print(f"⏱️  [Metrics] Context Synthesis Latency: {web_lat:.2f}ms")

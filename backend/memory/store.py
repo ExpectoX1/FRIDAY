@@ -1,6 +1,5 @@
 import asyncio
 import uuid
-import ollama
 from concurrent.futures import ThreadPoolExecutor
 from memory.extractor import extract_names
 from memory.reasoner import reason
@@ -82,43 +81,20 @@ def check_and_extract_entities(text: str) -> list[str]:
     return extract_names(text)
 
 
-def _is_worth_storing_llm(text: str) -> bool:
+def _is_worth_storing(text: str) -> bool:
     """
-    Ask Gemma if this utterance is worth storing as a long-term memory.
-    Uses num_predict=3 so it only generates YES or NO — takes ~200ms.
-    Fails open (returns True) on any error.
+    Fast heuristic gate deciding whether an utterance is worth the full
+    memory pipeline. Previously a blocking Gemma call — and because store()
+    awaits it on the event loop, that stalled the whole assistant per turn.
+
+    By the time we reach here the utterance has already cleared the pattern
+    filter AND yielded GLiNER entities, so it's almost certainly substantive.
+    We only need to reject obvious command/control phrasing.
     """
-    # Fast pre-check — never bother Gemma for obvious command patterns
     text_lower = text.lower().strip()
     if any(text_lower.startswith(p) for p in NEVER_STORE_PATTERNS):
         return False
-
-    try:
-        response = ollama.chat(
-            model="gemma3:12b",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Is this worth storing as a long-term personal memory about the user? "
-                        f"Reply only YES or NO.\n"
-                        f'Utterance: "{text}"\n\n'
-                        f"Store if: facts about the user, preferences, plans, relationships, emotions, goals.\n"
-                        f"Skip if: commands, questions, greetings, app control, time queries."
-                    ),
-                }
-            ],
-            options={"num_predict": 3},
-        )
-        answer = response.message.content.strip().upper()
-        result = answer.startswith("YES")
-        log_system(
-            "memory", f"LLM store decision: {'YES' if result else 'NO'} — {text[:40]}"
-        )
-        return result
-    except Exception as e:
-        log_system("memory", f"LLM store check failed, defaulting to store: {e}")
-        return True  # fail open
+    return True
 
 
 # =========================================================
@@ -173,8 +149,8 @@ async def store(text: str, force_sync: bool = False):
             log_system("memory", f"Skipped (pattern): {text[:50]}")
             return
 
-    # Step 2 — semantic filter via Gemma (fast, num_predict=3)
-    if not _is_worth_storing_llm(text):
+    # Step 2 — fast heuristic filter (no LLM, no event-loop blocking)
+    if not _is_worth_storing(text):
         return
 
     # Step 3 — full pipeline
