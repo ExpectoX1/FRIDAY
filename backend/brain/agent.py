@@ -10,6 +10,20 @@ from logger import log_system, log_tool, log_result, log_error
 MAX_ITERATIONS = 10
 MAX_RETRIES_PER_TOOL = 3
 
+# Tools that are almost always the FINAL action of a goal. When one succeeds we
+# return its own result message instead of paying another full inference just to
+# phrase a summary. Deliberately excludes chain-starters like open_app (often
+# "open chrome AND go to ...") and intermediate tools (search_*, read_file,
+# run_shell) where the model genuinely needs to reason about the result.
+TERMINAL_TOOLS = {"play_media", "navigate_browser", "get_date_time"}
+
+
+def _tool_message(result) -> str:
+    """Extract a user-facing line from a tool result."""
+    if isinstance(result, dict):
+        return result.get("message") or result.get("content") or "Done, Sir."
+    return str(result) if result else "Done, Sir."
+
 # Built once per process. The agent system prompt is static (personality +
 # tools list + cwd), so rebuilding it on every task — and re-deriving the
 # tools prompt each time — was pure overhead.
@@ -247,6 +261,12 @@ async def run_agent(
         else:
             retry_counts[tool_name] = 0
             succeeded.add(call_signature)
+
+            # Terminal tool succeeded → the goal is done. Skip the extra
+            # summarization inference and reply from the tool result directly.
+            if tool_name in TERMINAL_TOOLS:
+                log_system("agent", f"Terminal tool '{tool_name}' done — completing.")
+                return {"type": "reply", "content": _tool_message(tool_result)}
 
         truncated_result = str(tool_result)[:4000]
         if len(str(tool_result)) > 4000:
