@@ -111,6 +111,11 @@ COMPLEX_SIGNALS = [
 SIMPLE_SIGNALS = [
     "play ", "pause", "resume", "stop", "skip", "next song", "previous song",
     "volume", "open ", "close ", "launch ", "quit ", "what time", "what's the time",
+    # Chit-chat / greetings — pure conversation, must stay single-shot and never
+    # hit the heavy agent loop (the qwen router tends to over-classify these).
+    "how are you", "how are things", "how's it going", "how is it going",
+    "what's up", "thank you", "thanks", "good morning", "good afternoon",
+    "good evening", "good night", "tell me a joke", "who are you",
 ]
 
 
