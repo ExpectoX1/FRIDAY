@@ -164,9 +164,9 @@ async def handle_response(response: dict):
         if name in LLM_INTERPRET and result:
             try:
                 if name == "search_memory":
-                    prompt = f"Using this memory context, answer the user's last question naturally:\n{result}"
+                    prompt = f"Based on our conversation and this memory context, give a natural, concise spoken answer to what the user just asked. Do NOT ask what they want — just answer directly.\n\nMemory:\n{result}"
                 elif name == "search_web":
-                    prompt = f"Using these search results, answer the user's question naturally:\n{result}"
+                    prompt = f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
                 follow_up = await asyncio.to_thread(chat, prompt)
                 text_queue.put(follow_up.get("content", str(result)))
             except Exception as e:
