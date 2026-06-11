@@ -20,6 +20,20 @@ def _navigate_browser(url: str) -> dict:
     """Wrapper that ensures URL has protocol prefix."""
     import subprocess
 
+    # Reject descriptions/placeholders — the model sometimes passes prose like
+    # "Sky Sports article about X" instead of a real URL, which would open a
+    # garbage page. A real URL has no spaces and contains a dot.
+    candidate = (url or "").strip()
+    if not candidate or " " in candidate or "." not in candidate:
+        return {
+            "status": "error",
+            "message": (
+                f"'{url}' is not a valid URL. Pass a real URL "
+                "(e.g. https://www.skysports.com/football/news), not a description."
+            ),
+        }
+    url = candidate
+
     if not url.startswith("http"):
         url = "https://" + url
     try:

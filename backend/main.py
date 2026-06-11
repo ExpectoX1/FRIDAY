@@ -4,6 +4,7 @@ import asyncio
 import time
 import json
 import re
+import random
 from voice.stt import listen, transcribe
 from voice.tts import generate, play
 from brain.llm import chat, is_complex
@@ -21,6 +22,16 @@ friday_done = threading.Event()
 friday_done.set()
 
 LLM_INTERPRET = {"search_memory", "search_web"}
+
+# Spoken immediately when a request routes to the multi-step agent, so the user
+# hears feedback within ~1s instead of waiting out several seconds of silence.
+AGENT_ACK_PHRASES = [
+    "On it, Sir.",
+    "Let me look into that.",
+    "Working on it, Boss.",
+    "Give me a moment.",
+    "Right away, Sir.",
+]
 
 # Pending confirmation state — Option B proper implementation
 pending_confirmation: dict = {
@@ -295,6 +306,10 @@ async def assistant_loop():
         # ── Normal routing ────────────────────────────────────────────
         if is_complex(text):
             log_system("main", "Routing to agent loop.")
+            # Immediate audible ack so the user isn't met with silence while the
+            # multi-step loop runs (several seconds of inference). Plays while
+            # run_agent works.
+            enqueue_speech(random.choice(AGENT_ACK_PHRASES))
             from brain.llm import history as chat_history
             response = await run_agent(text, chat_history=chat_history)
             if response.get("type") == "reply":
