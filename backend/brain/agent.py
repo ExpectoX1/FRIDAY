@@ -1,75 +1,159 @@
 import json
 import asyncio
+import os
 from brain.llm import agent_chat
 from brain.personality import get_personality
 from tools.registry import get_tool
-from sandbox.executor import run as executor_run
+from sandbox.executor import run as executor_run, execute as executor_execute
 from logger import log_system, log_tool, log_result, log_error
 
-MAX_ITERATIONS = 5
+MAX_ITERATIONS = 10
 MAX_RETRIES_PER_TOOL = 3
 
 
 def _build_agent_system_prompt() -> str:
-    """Agent system prompt — extends personality with multi-step reasoning instructions."""
     base = get_personality()
+    cwd = os.getcwd()
     return (
         base
-        + """
+        + f"""
 
 ━━━ AGENT MODE — ACTIVE ━━━
 
-You are now operating in multi-step agent mode. You must reason through tasks step by step.
+You are now operating in multi-step agent mode.
+
+Environment:
+* Current working directory: {cwd}
+* For git commands on a project, first discover its path, then use git -C <path> <subcommand>
+* Never use && to chain commands. Use git -C <path> instead of cd && git.
+* Never hardcode paths — always discover them using tools or memory first.
+* All projects are located in ~/Projects/
+* To find a specific project: run_shell("ls ~/Projects") then use git -C ~/Projects/<name>
+* NEVER: "cd ~/Projects/FRIDAY && git status"
+* ALWAYS: "git -C ~/Projects/FRIDAY status"
+
+Discovery strategy:
+* If you need a project path → search_memory first, then ls ~/Projects
+* If you need running apps → get_running_apps
+* If you need file locations → run_shell("ls") or read_file
 
 Rules:
 1. Always output a "thought" field explaining your reasoning before acting.
-2. If the goal requires multiple steps, execute them one at a time.
+2. Execute tasks one step at a time.
 3. After each tool result, reason about whether the goal is complete.
-4. When the goal is fully complete, output type="reply" with a natural summary.
-5. Never repeat a tool call that already succeeded in your execution history.
-6. If a tool fails repeatedly, stop and ask the user for help.
+4. When complete, output type="reply" with a natural summary.
+5. Never repeat a tool call that already succeeded.
+6. If a tool fails repeatedly, stop and ask for help.
+7. In your thoughts, refer to the user as "Sir", "Boss", or "the user" — never by name.
+8. In execution history, always check the "success" field. If success=false, that step needs to be fixed before moving on. Never assume a step succeeded unless success=true.
 
 Output format:
-{"thought": "your reasoning here", "type": "tool", "name": "tool_name", "args": {...}}
-{"thought": "goal complete", "type": "reply", "content": "natural response to user"}
+{{"thought": "your reasoning here", "type": "tool", "name": "tool_name", "args": {{...}}}}
+{{"thought": "goal complete", "type": "reply", "content": "natural response"}}
 """
     )
 
 
-async def run_agent(user_utterance: str) -> dict:
+async def run_agent(
+    user_utterance: str,
+    resume_state: dict = None,
+) -> dict:
     """
     Orchestrates the multi-step Plan-Execute-Observe loop.
-    Returns a reply dict for main.py to pass to the TTS queue.
+
+    resume_state: if provided, resumes from a pending confirmation.
+    Format: {
+        "goal": str,
+        "confirmed_command": str,
+        "history": list,
+        "retry_counts": dict,
+        "system_prompt": str,
+        "base_prompt": str,
+    }
     """
-    log_system("agent", f"Goal: '{user_utterance}'")
+    # ── Resuming from confirmation ──────────────────────────────────────
+    # ── Resuming from confirmation ──────────────────────────────────────
+    if resume_state:
+        log_system("agent", "Resuming from confirmed command.")
+        goal = resume_state["goal"]
+        confirmed_command = resume_state["confirmed_command"]
+        agent_history = resume_state["history"]
+        retry_counts = resume_state["retry_counts"]
+        system_prompt = resume_state["system_prompt"]
+        base_prompt = resume_state["base_prompt"]
+        start_iteration = len(agent_history) + 1
 
-    # Step 1 — Memory context injection (always)
-    context_summary = ""
-    try:
-        memory_tool = get_tool("search_memory")
-        if memory_tool and memory_tool["function"]:
-            memory_res = await asyncio.to_thread(
-                memory_tool["function"], query=user_utterance
-            )
-            if memory_res:
-                context_summary = f"\n[Memory Context]:\n{memory_res}\n"
-                log_system("agent", "Memory context injected.")
-    except Exception as e:
-        log_error(f"Memory lookup failed: {e}")
+        log_system("agent", f"Executing confirmed: {confirmed_command}")
+        try:
+            tool_result = await asyncio.to_thread(executor_execute, confirmed_command)
+        except Exception as e:
+            tool_result = f"Execution error: {str(e)}"
+            log_error(f"Confirmed command failed: {e}")
 
-    agent_history = []
-    retry_counts = {}  # track failures per tool
-    system_prompt = _build_agent_system_prompt()
+        log_result("agent", tool_result)
 
-    base_prompt = f"""{context_summary}
+        # Detect silent failures — git returned status instead of commit success
+        result_str = str(tool_result)
+        silent_failure = any(
+            x in result_str
+            for x in [
+                "Changes not staged",
+                "no changes added",
+                "nothing to commit",
+                "nothing added to commit",
+                "Untracked files",
+            ]
+        )
+
+        agent_history.append(
+            {
+                "step": start_iteration,
+                "action": "run_shell",
+                "args": {"command": confirmed_command},
+                "result": result_str[:300],
+                "success": not silent_failure,
+                "note": (
+                    "FAILED — nothing was staged, need to run git add first"
+                    if silent_failure
+                    else "success"
+                ),
+            }
+        )
+
+        start_iteration += 1
+    # ── Fresh start ─────────────────────────────────────────────────────
+    else:
+        log_system("agent", f"Goal: '{user_utterance}'")
+        goal = user_utterance
+        agent_history = []
+        retry_counts = {}
+        system_prompt = _build_agent_system_prompt()
+        start_iteration = 1
+
+        # Memory context injection
+        context_summary = ""
+        try:
+            memory_tool = get_tool("search_memory")
+            if memory_tool and memory_tool["function"]:
+                memory_res = await asyncio.to_thread(
+                    memory_tool["function"], query=user_utterance
+                )
+                if memory_res:
+                    context_summary = f"\n[Memory Context]:\n{memory_res}\n"
+                    log_system("agent", "Memory context injected.")
+        except Exception as e:
+            log_error(f"Memory lookup failed: {e}")
+
+        base_prompt = f"""{context_summary}
 User Goal: "{user_utterance}"
 
-Complete this goal step by step. Check your execution history before each action."""
+Complete this goal step by step. Check your execution history before each action.
+If you need to find a project path, use search_memory first, then ls ~/Projects."""
 
-    for iteration in range(1, MAX_ITERATIONS + 1):
+    # ── Agent loop ───────────────────────────────────────────────────────
+    for iteration in range(start_iteration, MAX_ITERATIONS + 1):
         log_system("agent", f"Iteration {iteration}/{MAX_ITERATIONS}")
 
-        # Build prompt with execution history
         current_prompt = base_prompt
         if agent_history:
             history_str = "\n".join([json.dumps(h) for h in agent_history])
@@ -77,7 +161,6 @@ Complete this goal step by step. Check your execution history before each action
                 f"\n\n[Execution History]:\n{history_str}\n\nWhat is your next action?"
             )
 
-        # Step 2 — Planner: Gemma reasons and decides next action
         response = await asyncio.to_thread(agent_chat, current_prompt, system_prompt)
 
         thought = response.get("thought", "")
@@ -86,7 +169,6 @@ Complete this goal step by step. Check your execution history before each action
 
         log_system("agent", f"Thought: {thought}")
 
-        # Exit conditions
         if rtype == "reply" or done:
             log_system("agent", "Goal complete.")
             return {
@@ -100,7 +182,6 @@ Complete this goal step by step. Check your execution history before each action
             log_error(f"Unexpected response type: {rtype}")
             break
 
-        # Step 3 — Executor: run the tool
         tool_name = response.get("name")
         tool_args = response.get("args", {})
 
@@ -126,57 +207,64 @@ Complete this goal step by step. Check your execution history before each action
 
         log_result("agent", tool_result)
 
-        # Step 4 — Observer: check for failures, enforce retry budget
         is_error = isinstance(tool_result, str) and any(
             x in tool_result.lower()
-            for x in ["error", "failed", "exception", "permission denied", "not found"]
+            for x in [
+                "error",
+                "failed",
+                "exception",
+                "permission denied",
+                "not found",
+                "blocked",
+            ]
         )
 
         if is_error:
             retry_counts[tool_name] = retry_counts.get(tool_name, 0) + 1
             log_error(
-                f"Tool {tool_name} failure detected. Attempt {retry_counts[tool_name]}/{MAX_RETRIES_PER_TOOL}"
+                f"Tool {tool_name} failure. Attempt {retry_counts[tool_name]}/{MAX_RETRIES_PER_TOOL}"
             )
-
             if retry_counts[tool_name] >= MAX_RETRIES_PER_TOOL:
-                log_system(
-                    "agent",
-                    f"Tool {tool_name} hit retry cap. Aborting to prevent loop.",
-                )
                 return {
                     "type": "reply",
-                    "content": f"Sir, I ran into a persistent issue executing the {tool_name} tool. It keeps returning: '{tool_result}'. Would you like me to try something else?",
+                    "content": f"Sir, {tool_name} keeps failing after {MAX_RETRIES_PER_TOOL} attempts: '{str(tool_result)[:100]}'. Want me to try a different approach?",
                 }
         else:
             retry_counts[tool_name] = 0
 
-        # Handle system confirmation requirements mid-run
+        # Confirmation required — return state for resumption
         if isinstance(tool_result, str) and tool_result.startswith(
             "NEEDS_CONFIRMATION:"
         ):
             command = tool_result.replace("NEEDS_CONFIRMATION:", "").strip()
             return {
-                "type": "reply",
-                "content": f"Sir, I need your approval to execute the following terminal command: {command}. Should I proceed?",
+                "type": "needs_confirmation",
+                "content": f"Sir, I need your approval to run: {command}. Should I proceed?",
+                "pending_state": {
+                    "goal": goal,
+                    "confirmed_command": command,
+                    "history": agent_history,
+                    "retry_counts": retry_counts,
+                    "system_prompt": system_prompt,
+                    "base_prompt": base_prompt,
+                },
             }
 
-        # Format and truncate the result to protect context limits
         truncated_result = str(tool_result)[:300]
         if len(str(tool_result)) > 300:
             truncated_result += "... [Truncated]"
 
-        # Keep a clean log of actions and results in the agent loop context
-        history_step = {
-            "step": iteration,
-            "action": tool_name,
-            "args": tool_args,
-            "result": truncated_result,
-        }
-        agent_history.append(history_step)
+        agent_history.append(
+            {
+                "step": iteration,
+                "action": tool_name,
+                "args": tool_args,
+                "result": truncated_result,
+            }
+        )
 
-    # Catch iteration limit overflow (infinite loop safety guardrail)
-    log_system("agent", "Maximum thinking iterations reached. Closing loop.")
+    log_system("agent", "Max iterations reached.")
     return {
         "type": "reply",
-        "content": "Sir, I have hit my maximum reasoning steps limit for this task. Let me know if we should try a different approach.",
+        "content": "Sir, I hit my step limit on that task. Want me to try a different approach?",
     }

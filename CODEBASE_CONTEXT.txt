@@ -1,0 +1,163 @@
+FRIDAY — CODEBASE CONTEXT
+=========================
+As of: 2026-06-07
+Project root: ~/Projects/FRIDAY/
+Working directory for runtime: ~/Projects/FRIDAY/backend/
+
+OVERVIEW
+--------
+FRIDAY is a local, voice-driven personal AI assistant running entirely on-device.
+No cloud APIs. Everything — LLM, STT, TTS, entity extraction, memory — runs locally.
+The assistant listens via microphone, transcribes speech, sends it to an Ollama LLM,
+executes tool calls, speaks the response via TTS, and asynchronously stores facts
+into a Neo4j knowledge graph as long-term memory.
+
+A FastAPI server (api.py) exposes the knowledge graph over HTTP + WebSocket for
+real-time visualization in a browser-based D3.js frontend.
+
+TECH STACK
+----------
+- LLM inference:     Ollama (local)
+  - Chat model:      qwen2.5-coder:14b  (brain/llm.py, memory/reasoner.py)
+  - Fast/small:      qwen2.5:3b         (taxonomy guard in memory/writer.py)
+- STT:               faster-whisper, model=base.en, VAD enabled (voice/stt.py)
+- TTS:               Kokoro KPipeline, voice=af_heart (voice/tts.py)
+- Entity extraction: GLiNER, model=urchade/gliner_medium-v2.1 (memory/extractor.py)
+- Graph database:    Neo4j (bolt://localhost:7687, db=neo4j, pass=friday123)
+- API framework:     FastAPI + uvicorn + websockets
+- Package manager:   uv (pyproject.toml, .venv at project root)
+- Python:            3.11 (.venv/bin/python)
+
+HOW TO RUN
+----------
+Voice assistant (main loop):
+  cd backend && python main.py
+
+Graph visualization API:
+  cd backend && uvicorn api:app --host 0.0.0.0 --port 8766
+  Then open http://localhost:8766
+
+FILE STRUCTURE
+--------------
+backend/
+  main.py                  — Entry point. Voice loop: listen → transcribe → LLM → TTS → store memory
+  api.py                   — FastAPI server for graph visualization
+  logger.py                — Colored terminal logging helpers (log_system, log_user, log_response, etc.)
+  static/
+    index.html             — D3.js force-directed graph frontend (single HTML file)
+
+  brain/
+    llm.py                 — chat() function. Calls Ollama with qwen2.5-coder:14b.
+                             Structured JSON output via RESPONSE_SCHEMA. Rolling 6-message history.
+                             Returns {"type":"reply","content":...} or {"type":"tool","name":...,"args":{...}}
+    personality.py         — System prompt builder. Injects tools list and user profile context.
+                             FRIDAY persona: calm, witty, addresses user as "Sir/Boss/Siddharth".
+
+  memory/
+    schemas.py             — Pydantic models: Entity, Relationship, Contradiction, GraphDelta.
+                             EntityLabel enum: Person, Location, Project, Organization, Tool,
+                             SportsTeam, Product, Event, Preference, Habit, Emotion.
+    extractor.py           — GLiNER entity extraction. extract_names(text) → list[str].
+                             16 label categories, threshold=0.6. Singleton model (lazy loaded, thread-safe).
+    reasoner.py            — reason(text, entities, current_state) → GraphDelta | None.
+                             Calls Ollama with structured JSON output (GraphDelta schema).
+                             Reads profile context, compares against current graph state,
+                             outputs new_entities, new_relationships, contradictions.
+    writer.py              — MemoryWriter class. Neo4j driver.
+                             apply_delta(delta, conversation_id): writes entities + relationships.
+                             get_active_context(entities): fetches live relationships for given entities.
+                             consolidate_relation(proposed, existing): taxonomy guard via qwen2.5:3b
+                             — prevents duplicate/similar relation types proliferating.
+                             Relationship metadata: importance (0–1), decay_rate, confidence,
+                             mention_count, valid_from, valid_to, source_id, created_at, last_seen.
+                             DECAY_RATES dict maps relation types to rates (0.0=permanent, 0.8=fast).
+    store.py               — store(text) public API. Filters trivial messages (SKIP_PATTERNS),
+                             checks GLiNER finds entities, then runs 4-step pipeline in background thread:
+                             1. GLiNER extract  2. Neo4j read current state  3. Ollama reason  4. Write delta.
+    retrieve.py            — search_memory(query) → formatted string of graph triples.
+                             Used by the search_memory tool. GLiNER extracts entities from query,
+                             falls back to keyword splitting if GLiNER misses, fetches from Neo4j,
+                             returns "<system_memory>triples</system_memory>" string.
+    profile.py             — Static user profile (JSON at ~/FRIDAY/memory/profile.json).
+                             Seeded with: name=Siddharth, location=Bengaluru, projects=[FRIDAY, cocode],
+                             interests=[FC Barcelona, football, AI, local models].
+                             get_profile_prompt() injects this as baseline context into the reasoner.
+    graphiti_client.py     — Unused/experimental. Graphiti integration (Graphiti + Ollama + Neo4j).
+                             Not wired into the main pipeline currently.
+    tools.py               — Empty (placeholder).
+
+  tools/
+    registry.py            — TOOLS dict. Registered tools: open_app, close_app, run_shell,
+                             search_web, read_file, write_file, get_date_time, search_memory.
+                             get_tools_prompt() formats tool list for system prompt injection.
+    apps.py                — open_app / close_app via macOS `open -a` / `osascript`
+    shell.py               — run_shell() wrapper (passes to sandbox executor)
+    files.py               — read_file / write_file
+    web.py                 — search_web() (web search)
+    datetime_tool.py       — get_date_time()
+
+  sandbox/
+    executor.py            — Sandboxed shell command runner. Three-tier classification:
+                             SAFE (auto-execute): ls, pwd, cat, echo, git, which, whoami, date
+                             RISKY (ask confirmation): mkdir, touch, mv, cp, open, python3, node, osascript
+                             DANGEROUS (hard block): rm, sudo, curl, bash, npm, pip, etc.
+                             Also blocks shell metacharacters (&&, |, ;, >) and sensitive paths (.ssh, .aws).
+                             Working directory: ~/FRIDAY/workspace/
+
+  voice/
+    stt.py                 — listen() records mic until 0.8s silence, transcribe() runs faster-whisper.
+                             Mic device=2, sample_rate=16000, VAD filter enabled.
+    tts.py                 — generate(text) → numpy audio via Kokoro (af_heart voice, 24kHz).
+                             play(audio) plays via sounddevice with fade in/out.
+    wake_word.py           — Exists, not integrated into main loop yet.
+
+MAIN LOOP FLOW (main.py)
+------------------------
+1. Start TTS generator + player threads (queues for async playback)
+2. Pre-warm Ollama with a test message while startup audio plays
+3. Loop:
+   a. listen() — blocking mic capture
+   b. transcribe() — faster-whisper STT
+   c. chat(text) — LLM call, returns {type, content/name/args}
+   d. handle_response() — routes to TTS or tool execution
+   e. store(text) — async memory pipeline (background thread)
+
+MEMORY PIPELINE FLOW
+--------------------
+User utterance → is_worth_storing() filter → GLiNER extraction
+→ Neo4j current state read → Ollama reasoning (GraphDelta)
+→ Neo4j write (entities + relationships + contradictions)
+
+All relationships are timestamped. valid_to=null means active.
+Contradictions set valid_to on existing relationships to expire them.
+Importance increments by 0.1 (capped at 1.0) each time a relationship is re-mentioned.
+
+GRAPH VISUALIZATION API (api.py)
+---------------------------------
+GET  /              — serves static/index.html
+GET  /api/graph     — full graph snapshot: {nodes:[{id, label, neo_id}], links:[{source, target, type, importance, confidence, decay_rate, mention_count, valid_from, active}]}
+GET  /api/stats     — {nodes, active_rels, expired_rels}
+WS   /ws/graph      — WebSocket. Sends graph snapshot on connect, then pushes diffs every 2s when graph changes.
+
+Frontend (static/index.html):
+- D3.js v7 force-directed graph
+- Nodes colored by EntityLabel (Person=indigo, Location=sky, Project=violet, etc.)
+- Active links=blue, expired links=grey dashed
+- Link thickness = importance
+- Hover tooltips showing importance, confidence, mention_count, status
+- Toggle expired relationships (⌛ button)
+- Filter by entity type (show/hide buttons per label)
+- Sidebar entity list with search
+- WebSocket auto-reconnect, live green/red status dot
+- Stats bar at top (node count, active rels, expired rels)
+
+KNOWN STATE / NOTES
+-------------------
+- No wake word integration yet (voice/wake_word.py exists but unused)
+- graphiti_client.py is experimental — not used in live pipeline
+- memory/tools.py is empty placeholder
+- Neo4j deprecation warnings about id() vs elementId() are harmless (Neo4j 5.x)
+- valid_to property warnings from stats query are cosmetic (no relationships expired yet)
+- Mic device is hardcoded to device=2 in stt.py
+- Session conversation ID is regenerated on each main.py run (UUID in store.py)
+- The LLM chat history is in-memory only (lost on restart), max 6 messages rolling window

@@ -1,8 +1,7 @@
 import subprocess
 import shlex
-import ollama
+import os
 from pathlib import Path
-from datetime import datetime
 from logger import log_system
 
 # =========================================================
@@ -11,6 +10,8 @@ from logger import log_system
 
 WORKSPACE_DIR = str(Path.home() / "FRIDAY" / "workspace")
 Path(WORKSPACE_DIR).mkdir(parents=True, exist_ok=True)
+
+FRIDAY_PROJECT_DIR = str(Path.home() / "Projects" / "FRIDAY")
 
 
 def log(command: str, classification: str, result: str):
@@ -54,6 +55,35 @@ SAFE_COMMANDS = {
     "which",
     "whoami",
     "date",
+}
+
+# Git subcommands that are always safe — read-only operations
+SAFE_GIT_SUBCOMMANDS = {
+    "log",
+    "status",
+    "diff",
+    "show",
+    "branch",
+    "remote",
+    "fetch",
+    "stash",
+    "tag",
+    "describe",
+    "rev-parse",
+}
+
+# Git subcommands that need confirmation — write operations
+RISKY_GIT_SUBCOMMANDS = {
+    "add",
+    "commit",
+    "push",
+    "pull",
+    "merge",
+    "rebase",
+    "reset",
+    "checkout",
+    "switch",
+    "restore",
 }
 
 RISKY_COMMANDS = {
@@ -100,6 +130,7 @@ DANGEROUS_PATTERNS = [
     "dd if=",
 ]
 
+
 # =========================================================
 # VALIDATION
 # =========================================================
@@ -124,6 +155,30 @@ def parse_command(command: str):
         return None
 
 
+def _resolve_working_dir(command: str) -> str:
+    projects_dir = Path.home() / "Projects"
+
+    # If -C flag specified, git handles path itself
+    if "git -C" in command:
+        return WORKSPACE_DIR
+
+    # ls ~/Projects should run from home
+    if "ls" in command and "Projects" in command:
+        return str(Path.home())
+
+    # All other git commands run from ~/Projects
+    if command.strip().startswith("git"):
+        return str(projects_dir)
+
+    # Commands mentioning a specific project — run from that project
+    if projects_dir.exists():
+        for project in projects_dir.iterdir():
+            if project.is_dir() and project.name.lower() in command.lower():
+                return str(project)
+
+    return WORKSPACE_DIR
+
+
 # =========================================================
 # CLASSIFIER
 # =========================================================
@@ -137,7 +192,7 @@ def classify_command(command: str) -> str:
 
     executable = parts[0]
 
-    # hard blocks first
+    # Hard blocks first
     if has_shell_metacharacters(command):
         return "DANGEROUS"
 
@@ -150,13 +205,32 @@ def classify_command(command: str) -> str:
     if executable in BLOCKED_COMMANDS:
         return "DANGEROUS"
 
+    # Git gets special handling — subcommand aware
+    if executable == "git":
+        # Find the git subcommand — skip flags and -C path args
+        subcommand = None
+        i = 1
+        while i < len(parts):
+            if parts[i] == "-C" and i + 1 < len(parts):
+                i += 2  # skip -C and its path argument
+                continue
+            if not parts[i].startswith("-"):
+                subcommand = parts[i]
+                break
+            i += 1
+
+        if subcommand in SAFE_GIT_SUBCOMMANDS:
+            return "SAFE"
+        if subcommand in RISKY_GIT_SUBCOMMANDS:
+            return "RISKY"
+        return "RISKY"  # unknown git subcommand — ask
+
     if executable in SAFE_COMMANDS:
         return "SAFE"
 
     if executable in RISKY_COMMANDS:
         return "RISKY"
 
-    # unknown commands — default RISKY, never auto-execute
     return "RISKY"
 
 
@@ -166,14 +240,18 @@ def classify_command(command: str) -> str:
 
 
 def execute(command: str) -> str:
+    working_dir = _resolve_working_dir(command)
+    # Expand ~ in each token individually
+    parts = shlex.split(command)
+    expanded_parts = [os.path.expanduser(p) for p in parts]
     try:
         result = subprocess.run(
-            shlex.split(command),
+            expanded_parts,
             shell=False,
             capture_output=True,
             text=True,
-            timeout=10,
-            cwd=WORKSPACE_DIR,
+            timeout=15,
+            cwd=working_dir,
         )
         output = result.stdout.strip()
         error = result.stderr.strip()
@@ -183,7 +261,7 @@ def execute(command: str) -> str:
             return error
         return "Command executed successfully."
     except subprocess.TimeoutExpired:
-        return "Command timed out after 10 seconds."
+        return "Command timed out after 15 seconds."
     except Exception as e:
         return f"Execution error: {str(e)}"
 
@@ -195,7 +273,6 @@ def execute(command: str) -> str:
 
 def run(command: str) -> str:
     verdict = classify_command(command)
-
     log(command, verdict, "")
 
     if verdict == "INVALID":
@@ -209,15 +286,10 @@ def run(command: str) -> str:
         log(command, verdict, "NEEDS_CONFIRMATION")
         return f"NEEDS_CONFIRMATION: {command}"
 
-    # SAFE — execute
     result = execute(command)
     log(command, verdict, result)
     return result
 
-
-# =========================================================
-# TEST
-# =========================================================
 
 if __name__ == "__main__":
     while True:

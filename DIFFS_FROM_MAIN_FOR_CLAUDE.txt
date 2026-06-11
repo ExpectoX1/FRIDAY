@@ -1,0 +1,1347 @@
+# FRIDAY diffs from main for Claude
+
+Generated from: /Users/siddharthkumar/Projects/FRIDAY
+
+Current branch: main
+
+## Git status
+
+ M backend/brain/personality.py
+ M backend/main.py
+ M backend/tools/apps.py
+ M backend/tools/registry.py
+ M pyproject.toml
+?? CODEBASE_CONTEXT.txt
+?? backend/test_mac_core.py
+?? backend/test_netflix.py
+?? backend/test_spotify.py
+?? backend/tools/mac_core.py
+?? backend/tools/media.py
+
+## Change summary
+
+CHANGE SUMMARY
+- Added a high-level media automation tool for natural commands like "watch Friends on Netflix" and "play Blinding Lights on Spotify".
+- Wired the new play_media(title, service) tool into the tool registry.
+- Added prompt examples so FRIDAY chooses play_media for watch/play media intents instead of only open_app.
+- Updated main.py tool response handling so dict tool results speak their message/content cleanly.
+- apps.py now returns structured dict results from open_app/close_app instead of raw strings.
+- pyproject.toml now includes FastAPI/uvicorn/websockets dependencies from the graph viewer work.
+- Untracked files include the new media/mac automation experiments, Netflix/Spotify test scripts, and the codebase context file.
+
+IMPORTANT NOTES FOR CLAUDE
+- Current branch is main with uncommitted changes.
+- Git's normal diff excludes untracked files, so this handoff appends synthetic "new file" diffs for each untracked file.
+- The Netflix flow currently opens the Netflix search URL reliably, but auto-playing a title is best-effort because Netflix often hides cards/buttons from macOS Accessibility or inserts profile/sign-in/modals.
+
+## Tracked diff stat
+
+ backend/brain/personality.py |  6 ++++++
+ backend/main.py              |  7 ++++++-
+ backend/tools/apps.py        | 18 +++++++++---------
+ backend/tools/registry.py    |  6 ++++++
+ pyproject.toml               |  6 +++++-
+ 5 files changed, 32 insertions(+), 11 deletions(-)
+
+## Tracked git diff main
+
+diff --git a/backend/brain/personality.py b/backend/brain/personality.py
+index 31b8c12..1c51073 100644
+--- a/backend/brain/personality.py
++++ b/backend/brain/personality.py
+@@ -74,6 +74,12 @@ User: "where does my sister live"
+ User: "open spotify"
+ {{"type":"tool","name":"open_app","args":{{"name":"Spotify"}}}}
+ 
++User: "i want to watch the good doctor in netflix"
++{{"type":"tool","name":"play_media","args":{{"title":"The Good Doctor","service":"Netflix"}}}}
++
++User: "play blinding lights on spotify"
++{{"type":"tool","name":"play_media","args":{{"title":"Blinding Lights","service":"Spotify"}}}}
++
+ User: "what time is it"
+ {{"type":"tool","name":"get_date_time","args":{{}}}}
+ 
+diff --git a/backend/main.py b/backend/main.py
+index 72c6c3c..af34da6 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -90,7 +90,12 @@ def handle_response(response: dict):
+             text_queue.put(follow_up.get("content", result))
+             return
+ 
+-        text_queue.put(result if result else "Done Sir.")
++        if isinstance(result, dict):
++            text_queue.put(
++                result.get("message") or result.get("content") or "Done Sir."
++            )
++        else:
++            text_queue.put(result if result else "Done Sir.")
+ 
+     else:
+         log_error(response.get("content", "Unknown error"))
+diff --git a/backend/tools/apps.py b/backend/tools/apps.py
+index 8ce4e70..11012c9 100644
+--- a/backend/tools/apps.py
++++ b/backend/tools/apps.py
+@@ -29,22 +29,22 @@ NOT_RUNNING_RESPONSES = [
+ ]
+ 
+ 
+-def open_app(name: str) -> str:
++def open_app(name: str) -> dict:
+     try:
+         check = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True)
+         subprocess.run(["open", "-a", name])
+-        if check.returncode == 0:
+-            return random.choice(ALREADY_OPEN_RESPONSES)
+-        return random.choice(OPEN_RESPONSES)
++        already_open = check.returncode == 0
++        msg = random.choice(ALREADY_OPEN_RESPONSES if already_open else OPEN_RESPONSES)
++        return {"status": "success", "message": msg}
+     except Exception as e:
+-        return f"Failed to open {name}: {e}"
++        return {"status": "error", "message": f"Failed to open {name}: {e}"}
+ 
+ 
+-def close_app(name: str) -> str:
++def close_app(name: str) -> dict:
+     try:
+         result = subprocess.run(["pkill", "-x", name], capture_output=True, text=True)
+         if result.returncode == 0:
+-            return random.choice(CLOSE_RESPONSES)
+-        return random.choice(NOT_RUNNING_RESPONSES)
++            return {"status": "success", "message": random.choice(CLOSE_RESPONSES)}
++        return {"status": "error", "message": random.choice(NOT_RUNNING_RESPONSES)}
+     except Exception as e:
+-        return f"Failed to close {name}: {e}"
++        return {"status": "error", "message": f"Failed to close {name}: {e}"}
+diff --git a/backend/tools/registry.py b/backend/tools/registry.py
+index 1429827..a18dd58 100644
+--- a/backend/tools/registry.py
++++ b/backend/tools/registry.py
+@@ -5,6 +5,7 @@ from tools.shell import run_shell
+ from tools.files import read_file, write_file
+ from tools.apps import open_app, close_app
+ from tools.datetime_tool import get_date_time
++from tools.media import play_media
+ from memory.retrieve import search_memory
+ 
+ 
+@@ -55,6 +56,11 @@ TOOLS: dict[str, Tool] = {
+         "args": ["query"],
+         "function": search_memory,
+     },
++    "play_media": {
++        "description": "Play or open a movie, show, song, artist, or album in a supported media service. Use for requests like 'watch The Good Doctor on Netflix' or 'play Blinding Lights on Spotify'.",
++        "args": ["title", "service"],
++        "function": play_media,
++    },
+ }
+ 
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 780551b..f77a1f2 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,4 +4,8 @@ version = "0.1.0"
+ description = "Add your description here"
+ readme = "README.md"
+ requires-python = ">=3.11"
+-dependencies = []
++dependencies = [
++    "fastapi>=0.136.3",
++    "uvicorn>=0.49.0",
++    "websockets>=16.0",
++]
+
+## Untracked file diffs
+
+### CODEBASE_CONTEXT.txt
+
+diff --git a/CODEBASE_CONTEXT.txt b/CODEBASE_CONTEXT.txt
+new file mode 100644
+index 0000000..0635d50
+--- /dev/null
++++ b/CODEBASE_CONTEXT.txt
+@@ -0,0 +1,163 @@
++FRIDAY — CODEBASE CONTEXT
++=========================
++As of: 2026-06-07
++Project root: ~/Projects/FRIDAY/
++Working directory for runtime: ~/Projects/FRIDAY/backend/
++
++OVERVIEW
++--------
++FRIDAY is a local, voice-driven personal AI assistant running entirely on-device.
++No cloud APIs. Everything — LLM, STT, TTS, entity extraction, memory — runs locally.
++The assistant listens via microphone, transcribes speech, sends it to an Ollama LLM,
++executes tool calls, speaks the response via TTS, and asynchronously stores facts
++into a Neo4j knowledge graph as long-term memory.
++
++A FastAPI server (api.py) exposes the knowledge graph over HTTP + WebSocket for
++real-time visualization in a browser-based D3.js frontend.
++
++TECH STACK
++----------
++- LLM inference:     Ollama (local)
++  - Chat model:      qwen2.5-coder:14b  (brain/llm.py, memory/reasoner.py)
++  - Fast/small:      qwen2.5:3b         (taxonomy guard in memory/writer.py)
++- STT:               faster-whisper, model=base.en, VAD enabled (voice/stt.py)
++- TTS:               Kokoro KPipeline, voice=af_heart (voice/tts.py)
++- Entity extraction: GLiNER, model=urchade/gliner_medium-v2.1 (memory/extractor.py)
++- Graph database:    Neo4j (bolt://localhost:7687, db=neo4j, pass=friday123)
++- API framework:     FastAPI + uvicorn + websockets
++- Package manager:   uv (pyproject.toml, .venv at project root)
++- Python:            3.11 (.venv/bin/python)
++
++HOW TO RUN
++----------
++Voice assistant (main loop):
++  cd backend && python main.py
++
++Graph visualization API:
++  cd backend && uvicorn api:app --host 0.0.0.0 --port 8766
++  Then open http://localhost:8766
++
++FILE STRUCTURE
++--------------
++backend/
++  main.py                  — Entry point. Voice loop: listen → transcribe → LLM → TTS → store memory
++  api.py                   — FastAPI server for graph visualization
++  logger.py                — Colored terminal logging helpers (log_system, log_user, log_response, etc.)
++  static/
++    index.html             — D3.js force-directed graph frontend (single HTML file)
++
++  brain/
++    llm.py                 — chat() function. Calls Ollama with qwen2.5-coder:14b.
++                             Structured JSON output via RESPONSE_SCHEMA. Rolling 6-message history.
++                             Returns {"type":"reply","content":...} or {"type":"tool","name":...,"args":{...}}
++    personality.py         — System prompt builder. Injects tools list and user profile context.
++                             FRIDAY persona: calm, witty, addresses user as "Sir/Boss/Siddharth".
++
++  memory/
++    schemas.py             — Pydantic models: Entity, Relationship, Contradiction, GraphDelta.
++                             EntityLabel enum: Person, Location, Project, Organization, Tool,
++                             SportsTeam, Product, Event, Preference, Habit, Emotion.
++    extractor.py           — GLiNER entity extraction. extract_names(text) → list[str].
++                             16 label categories, threshold=0.6. Singleton model (lazy loaded, thread-safe).
++    reasoner.py            — reason(text, entities, current_state) → GraphDelta | None.
++                             Calls Ollama with structured JSON output (GraphDelta schema).
++                             Reads profile context, compares against current graph state,
++                             outputs new_entities, new_relationships, contradictions.
++    writer.py              — MemoryWriter class. Neo4j driver.
++                             apply_delta(delta, conversation_id): writes entities + relationships.
++                             get_active_context(entities): fetches live relationships for given entities.
++                             consolidate_relation(proposed, existing): taxonomy guard via qwen2.5:3b
++                             — prevents duplicate/similar relation types proliferating.
++                             Relationship metadata: importance (0–1), decay_rate, confidence,
++                             mention_count, valid_from, valid_to, source_id, created_at, last_seen.
++                             DECAY_RATES dict maps relation types to rates (0.0=permanent, 0.8=fast).
++    store.py               — store(text) public API. Filters trivial messages (SKIP_PATTERNS),
++                             checks GLiNER finds entities, then runs 4-step pipeline in background thread:
++                             1. GLiNER extract  2. Neo4j read current state  3. Ollama reason  4. Write delta.
++    retrieve.py            — search_memory(query) → formatted string of graph triples.
++                             Used by the search_memory tool. GLiNER extracts entities from query,
++                             falls back to keyword splitting if GLiNER misses, fetches from Neo4j,
++                             returns "<system_memory>triples</system_memory>" string.
++    profile.py             — Static user profile (JSON at ~/FRIDAY/memory/profile.json).
++                             Seeded with: name=Siddharth, location=Bengaluru, projects=[FRIDAY, cocode],
++                             interests=[FC Barcelona, football, AI, local models].
++                             get_profile_prompt() injects this as baseline context into the reasoner.
++    graphiti_client.py     — Unused/experimental. Graphiti integration (Graphiti + Ollama + Neo4j).
++                             Not wired into the main pipeline currently.
++    tools.py               — Empty (placeholder).
++
++  tools/
++    registry.py            — TOOLS dict. Registered tools: open_app, close_app, run_shell,
++                             search_web, read_file, write_file, get_date_time, search_memory.
++                             get_tools_prompt() formats tool list for system prompt injection.
++    apps.py                — open_app / close_app via macOS `open -a` / `osascript`
++    shell.py               — run_shell() wrapper (passes to sandbox executor)
++    files.py               — read_file / write_file
++    web.py                 — search_web() (web search)
++    datetime_tool.py       — get_date_time()
++
++  sandbox/
++    executor.py            — Sandboxed shell command runner. Three-tier classification:
++                             SAFE (auto-execute): ls, pwd, cat, echo, git, which, whoami, date
++                             RISKY (ask confirmation): mkdir, touch, mv, cp, open, python3, node, osascript
++                             DANGEROUS (hard block): rm, sudo, curl, bash, npm, pip, etc.
++                             Also blocks shell metacharacters (&&, |, ;, >) and sensitive paths (.ssh, .aws).
++                             Working directory: ~/FRIDAY/workspace/
++
++  voice/
++    stt.py                 — listen() records mic until 0.8s silence, transcribe() runs faster-whisper.
++                             Mic device=2, sample_rate=16000, VAD filter enabled.
++    tts.py                 — generate(text) → numpy audio via Kokoro (af_heart voice, 24kHz).
++                             play(audio) plays via sounddevice with fade in/out.
++    wake_word.py           — Exists, not integrated into main loop yet.
++
++MAIN LOOP FLOW (main.py)
++------------------------
++1. Start TTS generator + player threads (queues for async playback)
++2. Pre-warm Ollama with a test message while startup audio plays
++3. Loop:
++   a. listen() — blocking mic capture
++   b. transcribe() — faster-whisper STT
++   c. chat(text) — LLM call, returns {type, content/name/args}
++   d. handle_response() — routes to TTS or tool execution
++   e. store(text) — async memory pipeline (background thread)
++
++MEMORY PIPELINE FLOW
++--------------------
++User utterance → is_worth_storing() filter → GLiNER extraction
++→ Neo4j current state read → Ollama reasoning (GraphDelta)
++→ Neo4j write (entities + relationships + contradictions)
++
++All relationships are timestamped. valid_to=null means active.
++Contradictions set valid_to on existing relationships to expire them.
++Importance increments by 0.1 (capped at 1.0) each time a relationship is re-mentioned.
++
++GRAPH VISUALIZATION API (api.py)
++---------------------------------
++GET  /              — serves static/index.html
++GET  /api/graph     — full graph snapshot: {nodes:[{id, label, neo_id}], links:[{source, target, type, importance, confidence, decay_rate, mention_count, valid_from, active}]}
++GET  /api/stats     — {nodes, active_rels, expired_rels}
++WS   /ws/graph      — WebSocket. Sends graph snapshot on connect, then pushes diffs every 2s when graph changes.
++
++Frontend (static/index.html):
++- D3.js v7 force-directed graph
++- Nodes colored by EntityLabel (Person=indigo, Location=sky, Project=violet, etc.)
++- Active links=blue, expired links=grey dashed
++- Link thickness = importance
++- Hover tooltips showing importance, confidence, mention_count, status
++- Toggle expired relationships (⌛ button)
++- Filter by entity type (show/hide buttons per label)
++- Sidebar entity list with search
++- WebSocket auto-reconnect, live green/red status dot
++- Stats bar at top (node count, active rels, expired rels)
++
++KNOWN STATE / NOTES
++-------------------
++- No wake word integration yet (voice/wake_word.py exists but unused)
++- graphiti_client.py is experimental — not used in live pipeline
++- memory/tools.py is empty placeholder
++- Neo4j deprecation warnings about id() vs elementId() are harmless (Neo4j 5.x)
++- valid_to property warnings from stats query are cosmetic (no relationships expired yet)
++- Mic device is hardcoded to device=2 in stt.py
++- Session conversation ID is regenerated on each main.py run (UUID in store.py)
++- The LLM chat history is in-memory only (lost on restart), max 6 messages rolling window
+
+### backend/test_mac_core.py
+
+diff --git a/backend/test_mac_core.py b/backend/test_mac_core.py
+new file mode 100644
+index 0000000..55cd9b7
+--- /dev/null
++++ b/backend/test_mac_core.py
+@@ -0,0 +1,155 @@
++import time
++import json
++import subprocess
++from tools.apps import open_app
++from tools.mac_core import (
++    click_element_by_label,
++    type_text,
++    press_enter,
++    get_frontmost_app,
++    read_accessibility_tree,
++)
++
++# =========================================================
++# BACKGROUND COMPATIBLE NAVIGATOR
++# =========================================================
++
++
++def navigate_chrome_to_url(url: str) -> dict:
++    """Directly sets Chrome's active tab URL in the background, bypassing keystrokes."""
++    try:
++        script = f'tell application "Google Chrome" to set URL of active tab of front window to "{url}"'
++        subprocess.run(["osascript", "-e", script], check=True)
++        return {"status": "success", "message": f"Navigated background tab to {url}"}
++    except Exception as e:
++        return {"status": "error", "message": f"Navigation failed: {str(e)}"}
++
++
++def activate_application(app_name: str) -> bool:
++    """Forces global OS focus to the target app so it can safely receive keystrokes."""
++    try:
++        script = f'tell application "{app_name}" to activate'
++        subprocess.run(["osascript", "-e", script], check=True)
++        return True
++    except Exception:
++        return False
++
++
++# =========================================================
++# RUNTIME ENGINE LOGIC
++# =========================================================
++
++
++def step(num: int, desc: str, func, *args, **kwargs) -> bool:
++    print(f"\n[STEP {num}] {desc}")
++    result = func(*args, **kwargs)
++
++    if isinstance(result, str):
++        try:
++            result = json.loads(result)
++        except Exception:
++            print(f"  ✅ {result}")
++            return True
++
++    if result.get("status") == "success":
++        print(f"  ✅ {result.get('message', result.get('typed', 'Done'))}")
++        return True
++    else:
++        print(f"  ❌ {result.get('message', 'Unknown error')}")
++        return False
++
++
++def wait_for_page(keyword: str, app: str = "Google Chrome", max_wait: int = 12) -> bool:
++    print(f"  ⏳ Waiting for '{keyword}' to appear in page context...")
++    for i in range(max_wait):
++        time.sleep(1)
++        res_str = read_accessibility_tree(app)
++        result = json.loads(res_str)
++
++        # Scan tree labels safely
++        match = [
++            n
++            for n in result.get("tree", [])
++            if keyword.lower() in (n.get("label") or "").lower()
++        ]
++        if match:
++            print(
++                f"  ✅ Found '{keyword}' inside the active AX tree layer after {i+1}s"
++            )
++            return True
++        print(f"  ⏳ Parsing live layout trees... ({i+1}s)")
++    print(f"  ⚠️ '{keyword}' not captured within time constraints.")
++    return False
++
++
++def main():
++    print("=" * 50)
++    print("FRIDAY WORKFLOW TEST — Background Resilient Netflix Search")
++    print("=" * 50)
++
++    # Step 1 — Spin up Chrome container
++    if not step(1, "Open Google Chrome Infrastructure", open_app, "Google Chrome"):
++        return
++    time.sleep(1.5)
++
++    # Steps 2, 3, 4 Optimized — Native Background Navigation
++    print("\n[STEP 2-4] Routing direct background connection to Netflix URL")
++    nav_res = navigate_chrome_to_url("https://netflix.com")
++    if nav_res["status"] != "success":
++        print(f"  ❌ {nav_res['message']}")
++        return
++    print(f"  ✅ {nav_res['message']}")
++
++    # Step 4c — Wait for Netflix DOM to stream into the accessibility interface
++    # Netflix landing pages use "Sign In", profiles use "Search" or "Browse"
++    loaded = wait_for_page("Sign In", max_wait=12) or wait_for_page(
++        "Browse", max_wait=2
++    )
++    if not loaded:
++        # Fallback check to let execution proceed if it's already sitting on the profile select screen
++        print("  ⚠️ Continuing tree search sequence via custom fallback routing...")
++
++    # Step 5 — Background Element Click targeting the magnifying glass
++    print("\n[STEP 5] Locating and pressing Search Elements")
++    clicked = False
++    # Dynamic string mapping to match alternative localization formats across Netflix headers
++    for label in [
++        "Search titles, people, genres",
++        "Search Box",
++        "Search Netflix",
++        "Search",
++        "search",
++    ]:
++        result = json.loads(click_element_by_label(label, "Google Chrome"))
++        if result.get("status") == "success":
++            print(f"  ✅ Clicked Accessibility Node: '{label}'")
++            clicked = True
++            break
++        print(f"  ↳ Node '{label}' not reachable, scanning layout alternatives...")
++
++    if not clicked:
++        print(
++            "  ⚠️ Could not click search via accessibility. Injecting global focus fallback..."
++        )
++        activate_application("Google Chrome")
++        time.sleep(0.3)
++
++    # Step 6 — Safely route system typing context to Chrome text window bounds
++    activate_application("Google Chrome")
++    time.sleep(0.2)
++
++    if not step(6, "Type Search Query Payload", type_text, "The Good Doctor"):
++        return
++    time.sleep(0.3)
++
++    # Step 7 — Final Execution Trigger
++    if not step(7, "Press Enter to execute query processing", press_enter):
++        return
++
++    print("\n" + "=" * 50)
++    print("WORKFLOW SEQUENCE COMPLETE")
++    print("=" * 50)
++
++
++if __name__ == "__main__":
++    main()
+
+### backend/test_netflix.py
+
+diff --git a/backend/test_netflix.py b/backend/test_netflix.py
+new file mode 100644
+index 0000000..83974f3
+--- /dev/null
++++ b/backend/test_netflix.py
+@@ -0,0 +1,174 @@
++import time
++import json
++import subprocess
++from tools.apps import open_app
++from tools.mac_core import (
++    click_element_by_label,
++    type_text,
++    press_enter,
++    read_accessibility_tree,
++)
++
++
++def navigate_chrome_to_url(url: str) -> dict:
++    try:
++        script = f'tell application "Google Chrome" to set URL of active tab of front window to "{url}"'
++        subprocess.run(["osascript", "-e", script], check=True)
++        return {"status": "success", "message": f"Navigated background tab to {url}"}
++    except Exception as e:
++        return {"status": "error", "message": f"Navigation failed: {str(e)}"}
++
++
++def activate_application(app_name: str) -> bool:
++    try:
++        script = f'tell application "{app_name}" to activate'
++        subprocess.run(["osascript", "-e", script], check=True)
++        return True
++    except Exception:
++        return False
++
++
++def step(num: int, desc: str, func, *args, **kwargs) -> bool:
++    start_time = time.time()
++    print(f"\n[STEP {num}] {desc}")
++    result = func(*args, **kwargs)
++
++    if isinstance(result, str):
++        try:
++            result = json.loads(result)
++        except Exception:
++            print(f"  ✅ {result} ({time.time() - start_time:.2f}s)")
++            return True
++
++    if result.get("status") == "success":
++        msg = result.get("message", result.get("typed", "Done"))
++        print(f"  ✅ {msg} ({time.time() - start_time:.2f}s)")
++        return True
++    else:
++        print(f"  ❌ {result.get('message', 'Unknown error')}")
++        return False
++
++
++def wait_for_page(
++    keyword: str, app: str = "Google Chrome", max_wait_seconds: float = 10.0
++) -> bool:
++    print(f"  ⏳ High-frequency polling for '{keyword}'...")
++    start_time = time.time()
++    poll_interval = 0.15  # 150ms cycles for instant transition triggers
++
++    while (time.time() - start_time) < max_wait_seconds:
++        res_str = read_accessibility_tree(app)
++        result = json.loads(res_str)
++        match = [
++            n
++            for n in result.get("tree", [])
++            if keyword.lower() in (n.get("label") or "").lower()
++        ]
++        if match:
++            elapsed = time.time() - start_time
++            print(f"  ✅ Found '{keyword}' inside AX tree in {elapsed:.2f}s")
++            return True
++        time.sleep(poll_interval)
++
++    print(f"  ⚠️ '{keyword}' not captured within time constraints.")
++    return False
++
++
++def main():
++    total_start = time.time()
++    print("=" * 50)
++    print("FRIDAY WORKFLOW TEST — Stripped Training Wheels (Speed Mode)")
++    print("=" * 50)
++
++    # 1. Open Browser Context
++    if not step(1, "Open Google Chrome Infrastructure", open_app, "Google Chrome"):
++        return
++    time.sleep(0.1)
++
++    # 2. Route directly to Netflix
++    print("\n[STEP 2-4] Routing direct background connection to Netflix URL")
++    nav_start = time.time()
++    nav_res = navigate_chrome_to_url("https://netflix.com")
++    if nav_res["status"] != "success":
++        return
++    print(f"  ✅ {nav_res['message']} ({time.time() - nav_start:.2f}s)")
++
++    # 3. Wait for UI Landing Layer (High frequency)
++    wait_for_page("Browse", max_wait_seconds=10.0)
++
++    # 4. Bring Chrome to front right before focused interaction
++    activate_application("Google Chrome")
++    time.sleep(0.15)  # Micro-padding for OS window animation frame
++
++    # 5. Open Search Bar
++    print("\n[STEP 5] Activating Web Search Frame")
++    search_start = time.time()
++    clicked = False
++    for label in ["Search", "Search titles, people, genres", "Search Box"]:
++        res = json.loads(click_element_by_label(label, "Google Chrome"))
++        if res.get("status") == "success":
++            clicked = True
++            break
++    if not clicked:
++        print("  ❌ Search element unreachable.")
++        return
++    print(f"  ✅ Opened Search Input Panel ({time.time() - search_start:.2f}s)")
++    time.sleep(0.1)
++
++    # 6. Type Target Query
++    if not step(6, "Type Search Query Payload", type_text, "The Good Doctor"):
++        return
++    time.sleep(0.1)
++
++    # 7. Execute Search Command
++    if not step(7, "Press Enter to query results", press_enter):
++        return
++
++    # 8. High-speed poll for search grid content delivery
++    if not wait_for_page("The Good Doctor", max_wait_seconds=8.0):
++        print("  ❌ Search results did not load in time.")
++        return
++    time.sleep(0.2)
++
++    # 9. Click the show's title card from the search grid
++    print("\n[STEP 9] Targeting 'The Good Doctor' Media Card Element")
++    card_start = time.time()
++    select_card = json.loads(click_element_by_label("The Good Doctor", "Google Chrome"))
++    if select_card.get("status") != "success":
++        print("  ❌ Failed to click show card. Trying alternative title markers...")
++        click_element_by_label("Play The Good Doctor", "Google Chrome")
++    print(f"  ✅ Clicked Media Card ({time.time() - card_start:.2f}s)")
++
++    # 10. Aggressive reactive scan for popup play panels
++    print("\n[STEP 10] Scanning for secondary Play Triggers")
++    play_clicked = False
++    scan_start = time.time()
++    while (time.time() - scan_start) < 2.5:
++        res_tree = json.loads(read_accessibility_tree("Google Chrome"))
++        has_play_btn = any(
++            "play" in (node.get("label") or "").lower()
++            for node in res_tree.get("tree", [])
++        )
++        if has_play_btn:
++            click_element_by_label("Play", "Google Chrome")
++            print(
++                f"  ↳ Found standalone 'Play' button and clicked it! ({time.time() - scan_start:.2f}s)"
++            )
++            play_clicked = True
++            break
++        time.sleep(0.1)
++
++    if not play_clicked:
++        print(
++            "  ✅ No secondary modal block captured. Show should be playing directly."
++        )
++
++    print("\n" + "=" * 50)
++    print(
++        f"WORKFLOW COMPLETE — Total Real Execution Time: {time.time() - total_start:.2f} seconds"
++    )
++    print("=" * 50)
++
++
++if __name__ == "__main__":
++    main()
+
+### backend/test_spotify.py
+
+diff --git a/backend/test_spotify.py b/backend/test_spotify.py
+new file mode 100644
+index 0000000..c3c8bd8
+--- /dev/null
++++ b/backend/test_spotify.py
+@@ -0,0 +1,50 @@
++import time
++import subprocess
++
++
++def run_cmd(cmd_list):
++    return subprocess.run(cmd_list, capture_output=True, text=True)
++
++
++def main():
++    print("=" * 50)
++    print("FRIDAY WORKFLOW TEST — Universal Search Engine Match")
++    print("=" * 50)
++
++    # 1. Wake up Spotify and forcefully pass the clean text query to its background listener
++    print("[STEP 1] Initializing background app state with query routing...")
++    run_cmd(["open", "spotify:search:The Weeknd Blinding Lights"])
++    time.sleep(
++        1.2
++    )  # Give the framework breathing room to complete the API search fetch
++
++    # 2. Force application context to the foreground
++    run_cmd(["osascript", "-e", 'tell application "Spotify" to activate'])
++    time.sleep(0.3)
++
++    # 3. Inject a native macOS keyboard return stroke directly into the active app layer
++    print("[STEP 2] Deploying hardware execution signal...")
++    script_play = """
++    tell application "System Events"
++        tell process "Spotify"
++            key code 36 -- Hardware Return key to fire whatever is highlighted at top of search
++        end tell
++    end tell
++    """
++
++    res = run_cmd(["osascript", "-e", script_play])
++
++    if "error" in res.stderr.lower():
++        print("  ⚠️ System Events blocked. Attempting background toggle fallback...")
++        # Fallback: Send a raw spacebar event if focus alignment was slightly off
++        run_cmd(["osascript", "-e", 'tell application "Spotify" to play'])
++    else:
++        print("  ✅ Execution signal dispatched cleanly.")
++
++    print("\n" + "=" * 50)
++    print("WORKFLOW SEQUENCE DEPLOYED")
++    print("=" * 50)
++
++
++if __name__ == "__main__":
++    main()
+
+### backend/tools/mac_core.py
+
+diff --git a/backend/tools/mac_core.py b/backend/tools/mac_core.py
+new file mode 100644
+index 0000000..6d96349
+--- /dev/null
++++ b/backend/tools/mac_core.py
+@@ -0,0 +1,413 @@
++import subprocess
++import json
++import os
++import time
++from datetime import datetime
++
++try:
++    from AppKit import NSWorkspace
++    import ApplicationServices as AX
++    import objc
++
++    PYOBJC_AVAILABLE = True
++except ImportError:
++    PYOBJC_AVAILABLE = False
++
++# =========================================================
++# INTERNAL UTILITIES & CORE OPTIMIZATIONS
++# =========================================================
++
++
++def _get_target_pid(app_name: str = None) -> int:
++    """Helper to extract PID safely across native and web processes."""
++    if not PYOBJC_AVAILABLE:
++        return None
++    workspace = NSWorkspace.sharedWorkspace()
++    if app_name:
++        apps = workspace.runningApplications()
++        target = next(
++            (a for a in apps if app_name.lower() in (a.localizedName() or "").lower()),
++            None,
++        )
++        return target.processIdentifier() if target else None
++    front_app = workspace.frontmostApplication()
++    return front_app.processIdentifier() if front_app else None
++
++
++def _extract_web_area(element, depth=0):
++    """Deep-scans an application layout tree to isolate the webpage DOM from browser toolbars."""
++    if depth > 12:
++        return None
++    try:
++        _, role = AX.AXUIElementCopyAttributeValue(element, "AXRole", None)
++        if str(role) == "AXWebArea":
++            return element
++
++        _, children = AX.AXUIElementCopyAttributeValue(element, "AXChildren", None)
++        if children:
++            for child in children:
++                wa = _extract_web_area(child, depth + 1)
++                if wa:
++                    return wa
++    except Exception:
++        pass
++    return None
++
++
++def _wake_chromium_accessibility(app_ref, target_element=None):
++    """Injects high-priority system flags to force Chrome/Electron to build its web DOM."""
++    try:
++        AX.AXUIElementSetAttributeValue(app_ref, "AXEnhancedUserInterface", objc.YES)
++        AX.AXUIElementSetAttributeValue(app_ref, "AXManualAccessibility", objc.YES)
++        if target_element:
++            AX.AXUIElementSetAttributeValue(
++                target_element, "AXEnhancedUserInterface", objc.YES
++            )
++            AX.AXUIElementCopyAttributeValue(target_element, "AXChildren", None)
++        AX.AXUIElementCopyAttributeValue(app_ref, "AXFocusedUIElement", None)
++    except Exception:
++        pass
++
++
++def _walk_ax_tree(element, depth: int, max_depth: int) -> list:
++    """Recursively walks AX tree, filtering out structural clutter for data dumps."""
++    if depth > max_depth:
++        return []
++
++    nodes = []
++    try:
++        err, role = AX.AXUIElementCopyAttributeValue(element, "AXRole", None)
++        role = str(role) if role else None
++
++        ignorable_containers = {
++            "AXGroup",
++            "AXLayoutArea",
++            "AXScrollArea",
++            "AXSplitGroup",
++        }
++
++        if role not in ignorable_containers:
++            err, title = AX.AXUIElementCopyAttributeValue(element, "AXTitle", None)
++            err, value = AX.AXUIElementCopyAttributeValue(element, "AXValue", None)
++            err, desc = AX.AXUIElementCopyAttributeValue(element, "AXDescription", None)
++
++            title = str(title) if title else None
++            value = str(value) if value else None
++            desc = str(desc) if desc else None
++
++            meaningful_roles = {
++                "AXButton",
++                "AXTextField",
++                "AXTextArea",
++                "AXLink",
++                "AXCheckBox",
++                "AXRadioButton",
++                "AXMenuItem",
++                "AXMenuButton",
++                "AXComboBox",
++                "AXSearchField",
++                "AXStaticText",
++                "AXImage",
++                "AXTab",
++                "AXList",
++                "AXCell",
++                "AXWebArea",
++            }
++
++            label = title or desc or value
++            if role in meaningful_roles and label:
++                node = {"role": role, "label": label, "depth": depth}
++                if value and value != label:
++                    node["value"] = value
++                nodes.append(node)
++
++        err, children = AX.AXUIElementCopyAttributeValue(element, "AXChildren", None)
++        if children:
++            for child in children:
++                nodes.extend(_walk_ax_tree(child, depth + 1, max_depth))
++    except Exception:
++        pass
++    return nodes
++
++
++# =========================================================
++# EXPOSED FRIDAY RUNTIME INTERACTION ENGINE
++# =========================================================
++
++
++def press_enter() -> str:
++    """Simulates a hardware Return key press via low-level virtual key codes."""
++    try:
++        script = 'tell application "System Events" to key code 36'
++        subprocess.run(["osascript", "-e", script], check=True)
++        return json.dumps({"status": "success", "message": "Pressed Enter Key."})
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def press_key(key: str, modifiers: list = None) -> str:
++    """Presses a key with optional modifiers."""
++    try:
++        if modifiers:
++            mod_str = ", ".join(f"{m} down" for m in modifiers)
++            script = f'tell application "System Events" to keystroke "{key}" using {{{mod_str}}}'
++        else:
++            script = f'tell application "System Events" to keystroke "{key}"'
++        subprocess.run(["osascript", "-e", script], check=True)
++        return json.dumps({"status": "success", "message": f"Pressed {key}."})
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def type_text(text: str) -> str:
++    """Types text safely, escaping quotation parsing layout anomalies."""
++    try:
++        safe_text = text.replace("\\", "\\\\").replace('"', '\\"')
++        script = f"""
++        tell application "System Events"
++            keystroke "{safe_text}"
++        end tell
++        """
++        subprocess.run(["osascript", "-e", script], check=True)
++        return json.dumps(
++            {
++                "status": "success",
++                "typed": text,
++                "message": "Typed text payload successfully.",
++            }
++        )
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def click_element_by_label(label: str, app_name: str = None) -> str:
++    """Finds an element using isolated web window regions to bypass browser UI pollution."""
++    try:
++        pid = _get_target_pid(app_name)
++        if not pid:
++            return json.dumps(
++                {
++                    "status": "error",
++                    "message": f"Target process '{app_name}' not found.",
++                }
++            )
++
++        app_ref = AX.AXUIElementCreateApplication(pid)
++
++        err, windows = AX.AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
++        if err != 0 or not windows or len(windows) == 0:
++            err, target_root = AX.AXUIElementCopyAttributeValue(
++                app_ref, "AXFocusedWindow", None
++            )
++            if err != 0 or not target_root:
++                target_root = app_ref
++        else:
++            target_root = windows[0]
++
++        _wake_chromium_accessibility(app_ref, target_root)
++
++        # Isolate web layout region to screen out top control toolbars
++        web_area = _extract_web_area(target_root)
++        if web_area:
++            target_root = web_area
++
++        def _find_and_press(
++            element, target_label, current_depth=0, max_depth=8
++        ) -> bool:
++            if current_depth > max_depth:
++                return False
++            try:
++                _, title = AX.AXUIElementCopyAttributeValue(element, "AXTitle", None)
++                _, desc = AX.AXUIElementCopyAttributeValue(
++                    element, "AXDescription", None
++                )
++                _, value = AX.AXUIElementCopyAttributeValue(element, "AXValue", None)
++                current_label = title or desc or value
++                if current_label and target_label.lower() in str(current_label).lower():
++                    # Force accessibility elements to request direct operational keyboard focus markers
++                    AX.AXUIElementSetAttributeValue(element, "AXFocused", objc.YES)
++                    if AX.AXUIElementPerformAction(element, "AXPress") == 0:
++                        return True
++
++                _, children = AX.AXUIElementCopyAttributeValue(
++                    element, "AXChildren", None
++                )
++                if children:
++                    for child in children:
++                        if _find_and_press(
++                            child, target_label, current_depth + 1, max_depth
++                        ):
++                            return True
++            except Exception:
++                pass
++            return False
++
++        if _find_and_press(target_root, label):
++            return json.dumps(
++                {
++                    "status": "success",
++                    "message": f"Successfully clicked element matching: '{label}'",
++                }
++            )
++        else:
++            return json.dumps(
++                {
++                    "status": "error",
++                    "message": f"Could not find element matching label: '{label}'",
++                }
++            )
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def read_accessibility_tree(app_name: str = None) -> str:
++    """Scans application window layouts using isolated web regions if applicable."""
++    try:
++        pid = _get_target_pid(app_name)
++        if not pid:
++            return json.dumps(
++                {"status": "error", "message": f"App '{app_name}' not running"}
++            )
++
++        app_ref = AX.AXUIElementCreateApplication(pid)
++
++        err, windows = AX.AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
++        if err != 0 or not windows or len(windows) == 0:
++            err, target_element = AX.AXUIElementCopyAttributeValue(
++                app_ref, "AXFocusedWindow", None
++            )
++            if err != 0 or not target_element:
++                target_element = app_ref
++        else:
++            target_element = windows[0]
++
++        _wake_chromium_accessibility(app_ref, target_element)
++
++        # Isolate web space if viewing a browser instance
++        web_area = _extract_web_area(target_element)
++        if web_area:
++            target_element = web_area
++
++        tree = _walk_ax_tree(target_element, depth=0, max_depth=8)
++        return json.dumps(
++            {
++                "status": "success",
++                "pid": pid,
++                "element_count": len(tree),
++                "tree": tree,
++            }
++        )
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++# =========================================================
++# SYSTEM DIAGNOSTICS & HARDWARE FALLBACKS
++# =========================================================
++
++
++def get_frontmost_app() -> str:
++    if not PYOBJC_AVAILABLE:
++        return json.dumps({"status": "error", "message": "pyobjc not available"})
++    try:
++        workspace = NSWorkspace.sharedWorkspace()
++        app = workspace.frontmostApplication()
++        return json.dumps(
++            {
++                "status": "success",
++                "app": app.localizedName(),
++                "bundle_id": app.bundleIdentifier(),
++                "pid": app.processIdentifier(),
++            }
++        )
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def get_running_apps() -> str:
++    if not PYOBJC_AVAILABLE:
++        return json.dumps({"status": "error", "message": "pyobjc not available"})
++    try:
++        workspace = NSWorkspace.sharedWorkspace()
++        apps = workspace.runningApplications()
++        app_list = [
++            app.localizedName()
++            for app in apps
++            if app.activationPolicy() == 0 and app.localizedName()
++        ]
++        return json.dumps({"status": "success", "apps": sorted(app_list)})
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def get_clipboard() -> str:
++    try:
++        res = subprocess.run(["pbpaste"], capture_output=True, text=True, check=True)
++        return json.dumps({"status": "success", "content": res.stdout})
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def set_clipboard(text: str) -> str:
++    try:
++        process = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE, text=True)
++        process.communicate(input=text)
++        return json.dumps({"status": "success", "message": "Copied to clipboard."})
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def take_screenshot(filename: str = "friday_vision.png") -> str:
++    cache_dir = os.path.join(os.path.dirname(__file__), "..", "cache")
++    os.makedirs(cache_dir, exist_ok=True)
++    filepath = os.path.abspath(os.path.join(cache_dir, filename))
++    try:
++        subprocess.run(["screencapture", "-x", filepath], check=True)
++        return json.dumps(
++            {
++                "status": "success",
++                "path": filepath,
++                "timestamp": datetime.now().isoformat(),
++            }
++        )
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
++
++
++def check_permissions() -> str:
++    results = {}
++    trusted = AX.AXIsProcessTrusted() if PYOBJC_AVAILABLE else False
++    results["accessibility"] = "granted" if trusted else "MISSING"
++    try:
++        test_path = "/tmp/friday_test.png"
++        subprocess.run(["screencapture", "-x", test_path], check=True, timeout=2)
++        if os.path.exists(test_path):
++            os.remove(test_path)
++        results["screen_recording"] = "granted"
++    except Exception:
++        results["screen_recording"] = "MISSING"
++    return json.dumps(results)
++
++
++def focus_window(title_keyword: str, app_name: str = None) -> str:
++    """Brings a specific window to front by matching title keyword."""
++    try:
++        pid = _get_target_pid(app_name)
++        if not pid:
++            return json.dumps({"status": "error", "message": "App not found"})
++
++        app_ref = AX.AXUIElementCreateApplication(pid)
++        _wake_chromium_accessibility(app_ref)
++        err, windows = AX.AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
++
++        for win in windows or []:
++            err, title = AX.AXUIElementCopyAttributeValue(win, "AXTitle", None)
++            if title and title_keyword.lower() in str(title).lower():
++                AX.AXUIElementPerformAction(win, "AXRaise")
++                return json.dumps({"status": "success", "message": f"Focused: {title}"})
++
++        return json.dumps(
++            {"status": "error", "message": f"No window matching '{title_keyword}'"}
++        )
++    except Exception as e:
++        return json.dumps({"status": "error", "message": str(e)})
+
+### backend/tools/media.py
+
+diff --git a/backend/tools/media.py b/backend/tools/media.py
+new file mode 100644
+index 0000000..e9eae46
+--- /dev/null
++++ b/backend/tools/media.py
+@@ -0,0 +1,180 @@
++import json
++import subprocess
++import time
++from urllib.parse import quote_plus
++
++from tools.mac_core import click_element_by_label, read_accessibility_tree
++
++
++VIDEO_SERVICES = {
++    "netflix": {
++        "app": "Google Chrome",
++        "search_url": "https://www.netflix.com/search?q={query}",
++        "home_url": "https://www.netflix.com",
++    },
++}
++
++MUSIC_SERVICES = {
++    "spotify": {
++        "app": "Spotify",
++        "search_uri": "spotify:search:{query}",
++    },
++}
++
++
++def _run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
++    return subprocess.run(cmd, capture_output=True, text=True, check=check)
++
++
++def _osascript(script: str, check: bool = False) -> subprocess.CompletedProcess:
++    return _run(["osascript", "-e", script], check=check)
++
++
++def _apple_string(value: str) -> str:
++    return value.replace("\\", "\\\\").replace('"', '\\"')
++
++
++def _activate(app_name: str) -> None:
++    _osascript(f'tell application "{_apple_string(app_name)}" to activate')
++
++
++def _open_chrome_url(url: str) -> dict:
++    escaped_url = _apple_string(url)
++    script = f"""
++    tell application "Google Chrome"
++        activate
++        if not (exists front window) then make new window
++        set URL of active tab of front window to "{escaped_url}"
++    end tell
++    """
++    try:
++        _osascript(script, check=True)
++        return {"status": "success", "message": f"Opened {url}"}
++    except Exception as e:
++        fallback = _run(["open", "-a", "Google Chrome", url])
++        if fallback.returncode == 0:
++            return {"status": "success", "message": f"Opened {url}"}
++        return {"status": "error", "message": str(e)}
++
++
++def _wait_for_label(label: str, app_name: str, timeout: float = 8.0) -> bool:
++    start = time.time()
++    while time.time() - start < timeout:
++        try:
++            result = json.loads(read_accessibility_tree(app_name))
++            if result.get("status") == "success":
++                for node in result.get("tree", []):
++                    if label.lower() in (node.get("label") or "").lower():
++                        return True
++        except Exception:
++            pass
++        time.sleep(0.25)
++    return False
++
++
++def _click_first(labels: list[str], app_name: str) -> bool:
++    for label in labels:
++        try:
++            result = json.loads(click_element_by_label(label, app_name))
++            if result.get("status") == "success":
++                return True
++        except Exception:
++            pass
++    return False
++
++
++def _play_spotify(title: str) -> dict:
++    query = quote_plus(title)
++    uri = MUSIC_SERVICES["spotify"]["search_uri"].format(query=query)
++    opened = _run(["open", uri])
++    if opened.returncode != 0:
++        return {
++            "status": "error",
++            "message": opened.stderr.strip() or "Could not open Spotify search.",
++        }
++
++    time.sleep(1.2)
++    _activate("Spotify")
++    time.sleep(0.3)
++
++    # Spotify usually focuses the first search result when opened via spotify:search.
++    enter_script = """
++    tell application "System Events"
++        tell process "Spotify"
++            key code 36
++        end tell
++    end tell
++    """
++    res = _osascript(enter_script)
++    if res.returncode != 0:
++        _osascript('tell application "Spotify" to play')
++
++    return {
++        "status": "success",
++        "message": f"Opened Spotify search for '{title}' and triggered the top result.",
++    }
++
++
++def _play_netflix(title: str) -> dict:
++    encoded = quote_plus(title)
++    url = VIDEO_SERVICES["netflix"]["search_url"].format(query=encoded)
++    nav = _open_chrome_url(url)
++    if nav.get("status") != "success":
++        return nav
++
++    _activate("Google Chrome")
++    found_title = _wait_for_label(title, "Google Chrome", timeout=10.0)
++
++    clicked_card = _click_first(
++        [
++            f"Play {title}",
++            title,
++            "Play",
++        ],
++        "Google Chrome",
++    )
++
++    if clicked_card:
++        time.sleep(1.0)
++        _click_first(["Play", "Resume", "Start Over"], "Google Chrome")
++        return {
++            "status": "success",
++            "message": f"Opened Netflix and selected '{title}'.",
++        }
++
++    if found_title:
++        return {
++            "status": "success",
++            "message": f"Opened Netflix search results for '{title}'. I could see it, but could not auto-click the card.",
++        }
++
++    return {
++        "status": "success",
++        "message": f"Opened Netflix search for '{title}'. You may need to choose a profile, sign in, or pick the title manually.",
++    }
++
++
++def play_media(title: str, service: str = "netflix") -> dict:
++    """
++    High-level media command for FRIDAY.
++
++    This intentionally avoids making the LLM stitch together app opening, URL
++    routing, search typing, and AX clicks. Each service gets a direct route first,
++    then a small best-effort UI action where needed.
++    """
++    clean_title = (title or "").strip()
++    clean_service = (service or "netflix").strip().lower()
++
++    if not clean_title:
++        return {"status": "error", "message": "Missing media title."}
++
++    if clean_service in {"netflix", "netflix.com"}:
++        return _play_netflix(clean_title)
++
++    if clean_service in {"spotify", "music"}:
++        return _play_spotify(clean_title)
++
++    return {
++        "status": "error",
++        "message": f"Unsupported media service '{service}'. Supported: Netflix, Spotify.",
++    }

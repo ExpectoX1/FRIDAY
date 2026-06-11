@@ -1,5 +1,3 @@
-# memory/retrieve.py
-
 from memory.extractor import extract_names
 from memory.writer import MemoryWriter
 import logging
@@ -53,9 +51,13 @@ STOP_WORDS = {
     "know",
     "think",
     "please",
+    "status",
+    "project",
+    "update",
+    "current",
+    "latest",
 }
 
-# Minimum length to protect CONTAINS matching from short token noise
 MIN_ENTITY_LENGTH = 3
 
 
@@ -66,19 +68,19 @@ def search_memory(query: str, max_triples: int = 25) -> str:
         extracted = extract_names(query)
         entities = [name.title() for name in extracted] if extracted else []
 
-        # Step 2 — Keyword fallback if GLiNER misses
+        # Step 2 — Keyword fallback
         if not entities:
             words = [w.strip(",?.!\"'").lower() for w in query.split()]
             potential = [w.title() for w in words if w not in STOP_WORDS and len(w) > 1]
             entities = potential if potential else []
 
-        # Step 3 — Segregate exact vs fuzzy entity tokens
+        # Step 3 — Exact vs fuzzy split
         exact_entities = [e.lower() for e in entities]
         fuzzy_entities = [e.lower() for e in entities if len(e) >= MIN_ENTITY_LENGTH]
 
         with writer.driver.session() as session:
 
-            # Query 1 — Regular relationships
+            # Query 1 — Relationships
             rel_results = session.run(
                 """
                 MATCH (n)-[r]->(m)
@@ -102,7 +104,6 @@ def search_memory(query: str, max_triples: int = 25) -> str:
             ).data()
 
             # Query 2 — EventNodes
-            # Includes the egocentric baseline rider to capture unanchored future plans
             event_results = session.run(
                 """
                 MATCH (p)-[:INITIATED]->(e:EventNode)-[:TARGET]->(t)
@@ -122,16 +123,41 @@ def search_memory(query: str, max_triples: int = 25) -> str:
                 limit=max_triples,
             ).data()
 
+        # Step 4 — Relevance check
+        # If results don't mention any query keywords, return empty
+        # This prevents hallucination from unrelated memory context
+        if rel_results or event_results:
+            query_keywords = set(
+                w.lower().strip(",?.!\"'")
+                for w in query.split()
+                if w.lower() not in STOP_WORDS and len(w) > 2
+            )
+            all_text = " ".join(
+                [
+                    str(r.get("source", ""))
+                    + str(r.get("relation", ""))
+                    + str(r.get("target", ""))
+                    for r in rel_results + event_results
+                ]
+            ).lower()
+
+            # Check if at least one query keyword appears in results
+            relevance_hit = any(kw in all_text for kw in query_keywords)
+
+            if not relevance_hit and query_keywords:
+                logger.info(
+                    f"Memory results not relevant to query '{query}' — returning empty"
+                )
+                return ""
+
         if not rel_results and not event_results:
             return ""
 
         lines = []
 
-        # Format standard facts
         for r in rel_results:
             lines.append(f"({r['source']})-[{r['relation']}]->({r['target']})")
 
-        # Format event strings with explicit metadata formatting
         for e in event_results:
             meta = []
             if e.get("planned_for"):

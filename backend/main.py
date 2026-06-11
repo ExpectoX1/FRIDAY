@@ -19,16 +19,46 @@ friday_done.set()
 
 LLM_INTERPRET = {"search_memory", "search_web"}
 
+# Pending confirmation state — Option B proper implementation
+pending_confirmation: dict = {
+    "active": False,
+    "state": None,
+}
+
+CONFIRMATION_PHRASES = {
+    "yes",
+    "yes go ahead",
+    "proceed",
+    "go ahead",
+    "do it",
+    "confirm",
+    "approved",
+    "run it",
+    "sure",
+    "ok go ahead",
+    "yeah",
+    "yep",
+    "affirmative",
+}
+
+DENIAL_PHRASES = {
+    "no",
+    "cancel",
+    "stop",
+    "don't",
+    "abort",
+    "nevermind",
+    "never mind",
+    "no thanks",
+}
+
+
 # =========================================================
 # ROUTING
 # =========================================================
 
 
 def _is_complex_task(text: str) -> bool:
-    """
-    Decides whether to route through the agent loop or single-shot chat.
-    Simple heuristic — replace with a router model later.
-    """
     text_lower = text.lower().strip()
 
     simple_signals = [
@@ -78,6 +108,14 @@ def _is_complex_task(text: str) -> bool:
     return False
 
 
+def _is_confirmation(text: str) -> bool:
+    return text.lower().strip() in CONFIRMATION_PHRASES
+
+
+def _is_denial(text: str) -> bool:
+    return text.lower().strip() in DENIAL_PHRASES
+
+
 # =========================================================
 # TTS WORKERS
 # =========================================================
@@ -116,12 +154,20 @@ def tts_player_worker():
 
 
 async def handle_response(response: dict):
+    global pending_confirmation
     friday_done.clear()
     rtype = response.get("type")
 
     if rtype == "reply":
         log_response(response)
         text_queue.put(response.get("content", ""))
+
+    elif rtype == "needs_confirmation":
+        # Store pending state and ask user
+        pending_confirmation["active"] = True
+        pending_confirmation["state"] = response.get("pending_state")
+        log_system("main", "Pending confirmation stored.")
+        text_queue.put(response.get("content", "Should I proceed Sir?"))
 
     elif rtype == "tool":
         name = response.get("name")
@@ -192,6 +238,8 @@ async def handle_response(response: dict):
 
 
 async def assistant_loop():
+    global pending_confirmation
+
     log_system("main", "FRIDAY ONLINE")
 
     startup_audio = generate("Starting systems Sir, getting everything online.")
@@ -219,14 +267,40 @@ async def assistant_loop():
         print(f"You: {text}")
         log_user(text)
 
-        # Route the input dynamically based on complexity metrics
+        # ── Confirmation flow ─────────────────────────────────────────
+        if pending_confirmation["active"]:
+            if _is_confirmation(text):
+                log_system("main", "Confirmation received — resuming agent.")
+                saved_state = pending_confirmation["state"]
+                pending_confirmation = {"active": False, "state": None}
+                response = await run_agent(
+                    saved_state["goal"],
+                    resume_state=saved_state,
+                )
+                await handle_response(response)
+                asyncio.create_task(store(f"User: {text}"))
+                continue
+
+            elif _is_denial(text):
+                log_system("main", "Confirmation denied — cancelling.")
+                pending_confirmation = {"active": False, "state": None}
+                text_queue.put("Understood Sir, cancelled.")
+                asyncio.create_task(store(f"User: {text}"))
+                continue
+
+            else:
+                # User said something unrelated — clear confirmation, proceed normally
+                log_system("main", "Unrelated input — clearing pending confirmation.")
+                pending_confirmation = {"active": False, "state": None}
+
+        # ── Normal routing ────────────────────────────────────────────
         if _is_complex_task(text):
-            log_system("main", "Routing to multi-step agent core.")
+            log_system("main", "Routing to agent loop.")
             response = await run_agent(text)
         else:
             response = await asyncio.to_thread(chat, text)
 
-        # Let handle_response handle clean terminal logging inherently
+        log_response(response)
         await handle_response(response)
         asyncio.create_task(store(f"User: {text}"))
 
