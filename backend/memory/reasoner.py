@@ -5,7 +5,7 @@ from memory.schemas import GraphDelta
 from memory.profile import get_profile_prompt
 from logger import log_system
 
-MODEL = "qwen2.5-coder:14b"
+MODEL = "gemma3:12b"
 
 
 def build_prompt(text: str, entities: list[str], current_state: list[dict]) -> str:

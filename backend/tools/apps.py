@@ -29,22 +29,22 @@ NOT_RUNNING_RESPONSES = [
 ]
 
 
-def open_app(name: str) -> str:
+def open_app(name: str) -> dict:
     try:
         check = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True)
         subprocess.run(["open", "-a", name])
-        if check.returncode == 0:
-            return random.choice(ALREADY_OPEN_RESPONSES)
-        return random.choice(OPEN_RESPONSES)
+        already_open = check.returncode == 0
+        msg = random.choice(ALREADY_OPEN_RESPONSES if already_open else OPEN_RESPONSES)
+        return {"status": "success", "message": msg}
     except Exception as e:
-        return f"Failed to open {name}: {e}"
+        return {"status": "error", "message": f"Failed to open {name}: {e}"}
 
 
-def close_app(name: str) -> str:
+def close_app(name: str) -> dict:
     try:
         result = subprocess.run(["pkill", "-x", name], capture_output=True, text=True)
         if result.returncode == 0:
-            return random.choice(CLOSE_RESPONSES)
-        return random.choice(NOT_RUNNING_RESPONSES)
+            return {"status": "success", "message": random.choice(CLOSE_RESPONSES)}
+        return {"status": "error", "message": random.choice(NOT_RUNNING_RESPONSES)}
     except Exception as e:
-        return f"Failed to close {name}: {e}"
+        return {"status": "error", "message": f"Failed to close {name}: {e}"}

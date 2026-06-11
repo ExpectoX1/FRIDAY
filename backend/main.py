@@ -5,6 +5,7 @@ import time
 from voice.stt import listen, transcribe
 from voice.tts import generate, play
 from brain.llm import chat
+from brain.agent import run_agent
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
 from logger import *
@@ -14,7 +15,72 @@ text_queue = queue.Queue()
 audio_queue = queue.Queue()
 is_speaking = threading.Event()
 friday_done = threading.Event()
-friday_done.set()  # starts as done
+friday_done.set()
+
+LLM_INTERPRET = {"search_memory", "search_web"}
+
+# =========================================================
+# ROUTING
+# =========================================================
+
+
+def _is_complex_task(text: str) -> bool:
+    """
+    Decides whether to route through the agent loop or single-shot chat.
+    Simple heuristic — replace with a router model later.
+    """
+    text_lower = text.lower().strip()
+
+    simple_signals = [
+        "open ",
+        "close ",
+        "play ",
+        "what time",
+        "who is",
+        "where is",
+        "how are you",
+        "what is",
+        "set a",
+        "pause",
+        "stop",
+        "volume",
+        "skip",
+        "next",
+    ]
+    if any(text_lower.startswith(s) for s in simple_signals):
+        return False
+
+    complex_signals = [
+        "and then",
+        "after that",
+        "first ",
+        "step by step",
+        "push",
+        "commit",
+        "deploy",
+        "research",
+        "find and",
+        "open and",
+        "search and",
+        "write and",
+        "create and",
+        "help me",
+        "figure out",
+        "work out",
+        "can you",
+        "go to",
+        "navigate to",
+        "open chrome and",
+    ]
+    if any(s in text_lower for s in complex_signals):
+        return True
+
+    return False
+
+
+# =========================================================
+# TTS WORKERS
+# =========================================================
 
 
 def tts_generator_worker():
@@ -44,7 +110,12 @@ def tts_player_worker():
             friday_done.set()
 
 
-def handle_response(response: dict):
+# =========================================================
+# RESPONSE HANDLER
+# =========================================================
+
+
+async def handle_response(response: dict):
     friday_done.clear()
     rtype = response.get("type")
 
@@ -57,7 +128,6 @@ def handle_response(response: dict):
         args = response.get("args", {})
 
         log_tool("tool", name, args)
-
         tool = get_tool(name)
 
         if tool is None:
@@ -68,10 +138,19 @@ def handle_response(response: dict):
             text_queue.put(f"The {name} tool isn't wired up yet Sir.")
             return
 
-        if name == "run_shell":
-            result = executor_run(args.get("command", ""))
-        else:
-            result = tool["function"](**args)
+        try:
+            if name == "run_shell":
+                result = await asyncio.to_thread(executor_run, args.get("command", ""))
+            else:
+                result = await asyncio.to_thread(tool["function"], **args)
+        except TypeError as e:
+            log_error(f"Tool {name} bad args {args}: {e}")
+            text_queue.put(f"Something went wrong Sir, bad arguments for {name}.")
+            return
+        except Exception as e:
+            log_error(f"Tool {name} failed: {e}")
+            text_queue.put(f"That didn't work Sir, {name} ran into an error.")
+            return
 
         log_result("tool", result)
 
@@ -82,59 +161,74 @@ def handle_response(response: dict):
             )
             return
 
-        # memory results go back through LLM for natural response
-        if name == "search_memory" and result:
-            follow_up = chat(
-                f"Using this memory context, answer the user's last question naturally and concisely:\n{result}"
-            )
-            text_queue.put(follow_up.get("content", result))
+        if name in LLM_INTERPRET and result:
+            try:
+                if name == "search_memory":
+                    prompt = f"Using this memory context, answer the user's last question naturally:\n{result}"
+                elif name == "search_web":
+                    prompt = f"Using these search results, answer the user's question naturally:\n{result}"
+                follow_up = await asyncio.to_thread(chat, prompt)
+                text_queue.put(follow_up.get("content", str(result)))
+            except Exception as e:
+                log_error(f"LLM follow-up failed: {e}")
+                text_queue.put(str(result)[:200])
             return
 
-        text_queue.put(result if result else "Done Sir.")
+        if isinstance(result, dict):
+            text_queue.put(
+                result.get("message") or result.get("content") or "Done Sir."
+            )
+        else:
+            text_queue.put(result if result else "Done Sir.")
 
     else:
         log_error(response.get("content", "Unknown error"))
         text_queue.put(response.get("content", "Something went wrong Sir."))
 
 
-async def assistant_loop():
+# =========================================================
+# MAIN LOOP
+# =========================================================
 
+
+async def assistant_loop():
     log_system("main", "FRIDAY ONLINE")
 
-    # speak startup message while models load
     startup_audio = generate("Starting systems Sir, getting everything online.")
     if startup_audio is not None:
         audio_queue.put(startup_audio)
 
-    # pre-warm Ollama while TTS plays
-    from brain.llm import chat
+    await asyncio.to_thread(chat, "System initialization ping.")
 
-    chat("test message friday")
-
-    # ready
     ready_audio = generate("All systems online Sir, ready when you are.")
     if ready_audio is not None:
         audio_queue.put(ready_audio)
 
-    await asyncio.sleep(4)
+    await asyncio.sleep(2)
+
     while True:
-        # wait until FRIDAY is completely done
         while not friday_done.is_set():
             await asyncio.sleep(0.05)
 
-        audio = listen()
-        text = transcribe(audio)
+        audio = await asyncio.to_thread(listen)
+        text = await asyncio.to_thread(transcribe, audio)
 
         if not text.strip() or len(text.strip()) < 3:
             continue
 
         print(f"You: {text}")
         log_user(text)
-        response = chat(text)
-        log_response(response)
-        print(f"[RESPONSE] {response}")
-        handle_response(response)
-        asyncio.create_task(store(f"Siddharth: {text}"))
+
+        # Route the input dynamically based on complexity metrics
+        if _is_complex_task(text):
+            log_system("main", "Routing to multi-step agent core.")
+            response = await run_agent(text)
+        else:
+            response = await asyncio.to_thread(chat, text)
+
+        # Let handle_response handle clean terminal logging inherently
+        await handle_response(response)
+        asyncio.create_task(store(f"User: {text}"))
 
         await asyncio.sleep(0.01)
 

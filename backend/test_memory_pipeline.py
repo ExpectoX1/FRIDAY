@@ -396,8 +396,8 @@ async def test_mixed_memory_types():
 
     check(
         len(friday_rels) > 0,
-        f"FRIDAY project relationship created (stable fact): {friday_rels[0]['rel']}",
-        "FRIDAY relationship missing",
+        f"FRIDAY project relationship created (stable fact): {friday_rels[0]['rel'] if friday_rels else 'N/A'}",
+        "FRIDAY relationship missing — LLM routing WORKS_ON as event instead of relationship",
     )
     check(
         len(marathon_events) > 0,
