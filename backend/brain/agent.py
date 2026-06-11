@@ -10,6 +10,18 @@ from logger import log_system, log_tool, log_result, log_error
 MAX_ITERATIONS = 10
 MAX_RETRIES_PER_TOOL = 3
 
+# Built once per process. The agent system prompt is static (personality +
+# tools list + cwd), so rebuilding it on every task — and re-deriving the
+# tools prompt each time — was pure overhead.
+_AGENT_SYSTEM_PROMPT: str | None = None
+
+
+def _get_agent_system_prompt() -> str:
+    global _AGENT_SYSTEM_PROMPT
+    if _AGENT_SYSTEM_PROMPT is None:
+        _AGENT_SYSTEM_PROMPT = _build_agent_system_prompt()
+    return _AGENT_SYSTEM_PROMPT
+
 
 def _build_agent_system_prompt() -> str:
     base = get_personality()
@@ -38,7 +50,7 @@ Discovery strategy:
 * If you need file locations → run_shell("ls") or read_file
 
 Rules:
-1. Always output a "thought" field explaining your reasoning before acting.
+1. Always output a "thought" field. Keep it extremely concise—strictly under 15 words, a single sentence. Do not write long paragraphs of reasoning.
 2. Execute tasks one step at a time.
 3. After each tool result, reason about whether the goal is complete.
 4. When complete, output type="reply" with a natural summary.
@@ -133,7 +145,7 @@ async def run_agent(
         goal = user_utterance
         agent_history = []
         retry_counts = {}
-        system_prompt = _build_agent_system_prompt()
+        system_prompt = _get_agent_system_prompt()
         start_iteration = 1
 
         # Keep your existing memory context injection logic here...
@@ -200,6 +212,23 @@ async def run_agent(
 
         tool_name = response.get("name")
         tool_args = response.get("args", {})
+
+        # Deterministic loop guard: if the model proposes a tool call identical
+        # to one that already succeeded, it's almost always stuck re-running a
+        # completed terminal action (e.g. playing the same song 3x). Treat the
+        # goal as done instead of executing again.
+        call_signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
+        succeeded_signatures = {
+            f"{h['action']}:{json.dumps(h.get('args', {}), sort_keys=True)}"
+            for h in agent_history
+            if h.get("success")
+        }
+        if call_signature in succeeded_signatures:
+            log_system("agent", "Duplicate of a succeeded call — completing goal.")
+            return {
+                "type": "reply",
+                "content": response.get("content") or "Done, Sir.",
+            }
 
         log_tool("agent", tool_name, tool_args)
 

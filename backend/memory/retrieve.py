@@ -60,6 +60,44 @@ STOP_WORDS = {
 
 MIN_ENTITY_LENGTH = 3
 
+# Kinship/relationship edges are stored pointing AT Siddharth, e.g.
+# (Priya)-[SISTER_OF]->(Siddharth). Entity-centric search can't reach them
+# when the query names no entity ("what is my sister's name"), so we always
+# allow these relation types through the Siddharth fallback, on either side.
+KINSHIP_RELATIONS = [
+    "SISTER_OF",
+    "BROTHER_OF",
+    "MOTHER_OF",
+    "FATHER_OF",
+    "SON_OF",
+    "DAUGHTER_OF",
+    "PARENT_OF",
+    "SIBLING_OF",
+    "WIFE_OF",
+    "HUSBAND_OF",
+    "FRIEND_OF",
+]
+
+# Maps kinship words a user might say to the stored relation type. Lets the
+# relevance check recognise "my sister's name" as relevant to a SISTER_OF edge
+# even though the literal word "sister" never appears in the result triples.
+KINSHIP_KEYWORDS = {
+    "sister": "sister_of",
+    "brother": "brother_of",
+    "sibling": "sibling_of",
+    "mom": "mother_of",
+    "mum": "mother_of",
+    "mother": "mother_of",
+    "dad": "father_of",
+    "father": "father_of",
+    "son": "son_of",
+    "daughter": "daughter_of",
+    "parent": "parent_of",
+    "wife": "wife_of",
+    "husband": "husband_of",
+    "friend": "friend_of",
+}
+
 
 def search_memory(query: str, max_triples: int = 25) -> str:
     writer = MemoryWriter()
@@ -90,6 +128,8 @@ def search_memory(query: str, max_triples: int = 25) -> str:
                     OR ANY(entity IN $fuzzy WHERE toLower(n.name) CONTAINS entity)
                     OR ANY(entity IN $fuzzy WHERE toLower(m.name) CONTAINS entity)
                     OR (n.name = 'Siddharth' AND type(r) IN ['LIVES_IN', 'WORKS_AT', 'WORKS_ON', 'FEELS'])
+                    OR (m.name = 'Siddharth' AND type(r) IN $kinship)
+                    OR (n.name = 'Siddharth' AND type(r) IN $kinship)
                 )
                 AND r.valid_to IS NULL
                 AND NOT m:EventNode
@@ -100,6 +140,7 @@ def search_memory(query: str, max_triples: int = 25) -> str:
             """,
                 exact=exact_entities,
                 fuzzy=fuzzy_entities,
+                kinship=KINSHIP_RELATIONS,
                 limit=max_triples,
             ).data()
 
@@ -143,6 +184,15 @@ def search_memory(query: str, max_triples: int = 25) -> str:
 
             # Check if at least one query keyword appears in results
             relevance_hit = any(kw in all_text for kw in query_keywords)
+
+            # Kinship-aware: "my sister's name" should match a SISTER_OF edge
+            # even though the literal word "sister" isn't in the triples.
+            if not relevance_hit:
+                query_lower = query.lower()
+                relevance_hit = any(
+                    word in query_lower and relation in all_text
+                    for word, relation in KINSHIP_KEYWORDS.items()
+                )
 
             if not relevance_hit and query_keywords:
                 logger.info(

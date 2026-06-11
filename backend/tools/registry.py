@@ -107,5 +107,57 @@ def get_tools_prompt() -> str:
     return s
 
 
+# Per-argument hints for the native tool schema. All args are strings; this
+# only overrides description/enum where it helps the model pick correctly.
+# Args not listed here default to {"type": "string", "description": <arg name>}.
+ARG_DETAILS: dict[str, dict] = {
+    "command": {"type": "string", "description": "The shell command to run."},
+    "name": {"type": "string", "description": "The full app name, e.g. 'Google Chrome'."},
+    "path": {"type": "string", "description": "Absolute file path."},
+    "content": {"type": "string", "description": "Content to write to the file."},
+    "query": {"type": "string", "description": "The search query."},
+    "url": {"type": "string", "description": "The URL to navigate to."},
+    "title": {"type": "string", "description": "Title of the song, show, or movie."},
+    "service": {
+        "type": "string",
+        "description": "Streaming service to use.",
+        "enum": ["Spotify", "Netflix"],
+    },
+}
+
+_TOOLS_SPEC_CACHE: Optional[list[dict]] = None
+
+
+def get_tools_spec() -> list[dict]:
+    """Build the native Ollama tool schema from TOOLS. Cached — TOOLS is static."""
+    global _TOOLS_SPEC_CACHE
+    if _TOOLS_SPEC_CACHE is not None:
+        return _TOOLS_SPEC_CACHE
+
+    spec = []
+    for name, tool in TOOLS.items():
+        properties = {
+            arg: ARG_DETAILS.get(arg, {"type": "string", "description": arg})
+            for arg in tool["args"]
+        }
+        spec.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": tool["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": list(tool["args"]),
+                    },
+                },
+            }
+        )
+
+    _TOOLS_SPEC_CACHE = spec
+    return spec
+
+
 def get_tool(name: str) -> Optional[Tool]:
     return TOOLS.get(name, None)
