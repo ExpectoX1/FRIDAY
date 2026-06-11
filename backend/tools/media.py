@@ -42,18 +42,17 @@ def _open_chrome_url(url: str) -> dict:
     escaped_url = _apple_string(url)
     script = f"""
     tell application "Google Chrome"
-        activate
-        if not (exists front window) then make new window
+        make new window
         set URL of active tab of front window to "{escaped_url}"
     end tell
     """
     try:
         _osascript(script, check=True)
-        return {"status": "success", "message": f"Opened {url}"}
+        return {"status": "success", "message": f"Opened {url} in a new window"}
     except Exception as e:
-        fallback = _run(["open", "-a", "Google Chrome", url])
+        fallback = _run(["open", "-na", "Google Chrome", "--args", "--new-window", url])
         if fallback.returncode == 0:
-            return {"status": "success", "message": f"Opened {url}"}
+            return {"status": "success", "message": f"Opened {url} in a new window"}
         return {"status": "error", "message": str(e)}
 
 

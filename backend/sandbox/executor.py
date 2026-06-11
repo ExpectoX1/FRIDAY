@@ -274,6 +274,15 @@ def run(command: str) -> str:
 
     if verdict == "DANGEROUS":
         log(command, verdict, "BLOCKED")
+        # Provide detailed feedback for the LLM to adapt dynamically
+        if has_shell_metacharacters(command):
+            used = [char for char in SHELL_METACHARACTERS if char in command]
+            return f"BLOCKED: Command contains restricted shell metacharacters {used}. Chaining or piping commands is not allowed in run_shell. Write a Python script to do this and execute it via python3 instead."
+        if contains_dangerous_pattern(command) or contains_sensitive_path(command):
+            return "BLOCKED: Command contains sensitive paths or dangerous command patterns."
+        parts = parse_command(command)
+        if parts and parts[0] in BLOCKED_COMMANDS:
+            return f"BLOCKED: The command '{parts[0]}' is restricted for safety."
         return "I can't run that Boss. That command is hard blocked. Run it yourself if you're sure."
 
     if verdict == "RISKY":

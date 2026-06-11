@@ -46,6 +46,11 @@ Rules:
 6. If a tool fails repeatedly, stop and ask for help.
 7. In your thoughts, refer to the user as "Sir", "Boss", or "the user" — never by name.
 8. In execution history, always check the "success" field. If success=false, that step needs to be fixed before moving on. Never assume a step succeeded unless success=true.
+9. Shell metacharacters (&&, ||, ;, |, >, >>, <, `, $() etc.) are BLOCKED in run_shell for safety. You CANNOT chain multiple commands using semicolons (;) or &&. Because you have a limit of 10 iterations, performing batch operations file-by-file (like moving 10 files one-by-one) will hit the step limit and fail. Therefore, for any batch file operations (such as sorting a directory, moving/renaming/deleting multiple files, or handling files with complex names), you MUST write a Python script using write_file to the workspace (under /Users/siddharthkumar/FRIDAY/workspace/your_script.py) and execute it via a single command: run_shell("python3 /Users/siddharthkumar/FRIDAY/workspace/your_script.py").
+10. Media Routing Rules:
+    - If the user asks to play a song, artist, album, or music, default to Spotify using the play_media tool (service="Spotify").
+    - If the user asks to watch a movie or TV show, default to Netflix using the play_media tool (service="Netflix").
+    - If the user asks to play a "video" (especially YouTube videos, YouTube creators like YJR, Markaroni, etc., or general web videos), do NOT use Spotify/Netflix. Instead, search the web to find the video's URL and open it in Google Chrome using the navigate_browser tool.
 
 Output format:
 {{"thought": "your reasoning here", "type": "tool", "name": "tool_name", "args": {{...}}}}
@@ -110,7 +115,7 @@ async def run_agent(
                 "step": start_iteration,
                 "action": "run_shell",
                 "args": {"command": confirmed_command},
-                "result": result_str[:300],
+                "result": result_str[:4000],
                 "success": not silent_failure,
                 "note": (
                     "FAILED — nothing was staged, need to run git add first"
@@ -260,8 +265,8 @@ async def run_agent(
                 },
             }
 
-        truncated_result = str(tool_result)[:300]
-        if len(str(tool_result)) > 300:
+        truncated_result = str(tool_result)[:4000]
+        if len(str(tool_result)) > 4000:
             truncated_result += "... [Truncated]"
 
         # FIX: Explicitly appending the tracking boolean for the LLM to inspect

@@ -16,20 +16,21 @@ def search_web(query: str) -> str:
             include_answer=True,  # Tavily generates a summary
         )
 
-        # use Tavily's answer if available
         answer = response.get("answer")
-        if answer:
-            return answer
-
-        # fallback to raw results
         results = response.get("results", [])
-        if not results:
+
+        output = ""
+        if answer:
+            output += f"Summary: {answer}\n\n"
+
+        if results:
+            output += "Top Search Results & URLs:\n"
+            for r in results[:3]:
+                output += f"- {r['title']}: {r['content'][:150]} (URL: {r['url']})\n\n"
+
+        if not output.strip():
             return "No results found Sir."
 
-        summary = ""
-        for r in results[:3]:
-            summary += f"{r['title']}: {r['content'][:150]}\n\n"
-
-        return summary.strip()
+        return output.strip()
     except Exception as e:
         return f"Search failed: {e}"

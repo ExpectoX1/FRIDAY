@@ -1,7 +1,8 @@
 import sys
+import json
 import asyncio
 import time
-from brain.llm import chat
+from brain.llm import chat, is_complex
 from brain.agent import run_agent  # Integrated the Agent Loop
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run, execute
@@ -38,60 +39,7 @@ TESTS = [
 # =========================================================
 
 
-def _is_complex_task(text: str) -> bool:
-    """
-    Decides whether to route through the agent loop or single-shot chat.
-    Complex multi-step signals take priority over simple command prefixes.
-    """
-    text_lower = text.lower().strip()
 
-    # 1. Check complex triggers FIRST so compound commands don't short-circuit
-    complex_signals = [
-        "and then",
-        "after that",
-        "first ",
-        "step by step",
-        "push",
-        "commit",
-        "deploy",
-        "research",
-        "find and",
-        "open and",
-        "search and",
-        "write and",
-        "create and",
-        "help me",
-        "figure out",
-        "work out",
-        "can you",
-        "go to",
-        "navigate to",
-        "open chrome and",
-    ]
-    if any(s in text_lower for s in complex_signals):
-        return True
-
-    # 2. Fall back to simple single-shot operations
-    simple_signals = [
-        "open ",
-        "close ",
-        "play ",
-        "what time",
-        "who is",
-        "where is",
-        "how are you",
-        "what is",
-        "set a",
-        "pause",
-        "stop",
-        "volume",
-        "skip",
-        "next",
-    ]
-    if any(text_lower.startswith(s) for s in simple_signals):
-        return False
-
-    return False
 
 
 # =========================================================
@@ -177,6 +125,17 @@ def handle_manual_single_shot(response: dict, llm_latency: float):
             print(f"💬 FRIDAY: {follow_up.get('content', result)}\n")
             return
 
+        if name == "search_web" and result:
+            print(f"🌐 [Web Search] {result}")
+            web_start = time.perf_counter()
+            follow_up = chat(
+                f"Using these search results, answer the user's last question naturally:\n{result}"
+            )
+            web_lat = (time.perf_counter() - web_start) * 1000
+            print(f"⏱️  [Metrics] Context Synthesis Latency: {web_lat:.2f}ms")
+            print(f"💬 FRIDAY: {follow_up.get('content', result)}\n")
+            return
+
         print(f"📦 [Result] {result}\n")
         return
 
@@ -251,9 +210,6 @@ def run_manual():
 
     loop = asyncio.get_event_loop()
 
-    # Global cross-turn conversational context session list
-    history = []
-
     # Pending confirmation state
     pending_confirmation = {"active": False, "state": None}
 
@@ -307,12 +263,13 @@ def run_manual():
                 pending_confirmation = {"active": False, "state": None}
 
                 agent_start = time.perf_counter()
+                from brain.llm import history as chat_history
                 # Pass active history state through confirmation resumption
                 response = loop.run_until_complete(
                     run_agent(
                         saved_state["goal"],
                         resume_state=saved_state,
-                        chat_history=history,
+                        chat_history=chat_history,
                     )
                 )
                 agent_latency = (time.perf_counter() - agent_start) * 1000
@@ -326,9 +283,11 @@ def run_manual():
                     )
                 else:
                     print(f"💬 FRIDAY: {response.get('content', 'Done.')}\n")
-                    history.append(
-                        {"role": "assistant", "content": response.get("content", "")}
-                    )
+                    chat_history.append({"role": "user", "content": saved_state["goal"]})
+                    chat_history.append({
+                        "role": "assistant",
+                        "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
+                    })
 
                 log_response(response)
                 loop.run_until_complete(store(f"User: {user_input}"))
@@ -345,15 +304,14 @@ def run_manual():
                 pending_confirmation = {"active": False, "state": None}
 
         # ── Normal routing ────────────────────────────────────────
-        if _is_complex_task(user_input):
+        if is_complex(user_input):
             print("🧠 [Routing] Sent to Agent Loop Core...")
 
-            # Append the incoming turn to history before the core execution runs
-            history.append({"role": "user", "content": user_input})
+            from brain.llm import history as chat_history
 
             agent_start = time.perf_counter()
             response = loop.run_until_complete(
-                run_agent(user_input, chat_history=history)
+                run_agent(user_input, chat_history=chat_history)
             )
             agent_latency = (time.perf_counter() - agent_start) * 1000
 
@@ -365,21 +323,17 @@ def run_manual():
                 print(f"💬 FRIDAY: {response.get('content', 'Should I proceed?')}\n")
             else:
                 print(f"💬 FRIDAY: {response.get('content', 'Done.')}\n")
-                history.append(
-                    {"role": "assistant", "content": response.get("content", "")}
-                )
+                chat_history.append({"role": "user", "content": user_input})
+                chat_history.append({
+                    "role": "assistant",
+                    "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
+                })
         else:
             # Single-Shot Core Route
             llm_start = time.perf_counter()
             response = chat(user_input)
             llm_latency = (time.perf_counter() - llm_start) * 1000
             handle_manual_single_shot(response, llm_latency)
-
-            # Synchronize history context mapping for basic single shots too
-            history.append({"role": "user", "content": user_input})
-            history.append(
-                {"role": "assistant", "content": response.get("content") or ""}
-            )
 
         log_response(response)
         loop.run_until_complete(store(f"User: {user_input}"))

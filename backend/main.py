@@ -2,9 +2,10 @@ import queue
 import threading
 import asyncio
 import time
+import json
 from voice.stt import listen, transcribe
 from voice.tts import generate, play
-from brain.llm import chat
+from brain.llm import chat, is_complex
 from brain.agent import run_agent
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
@@ -58,54 +59,7 @@ DENIAL_PHRASES = {
 # =========================================================
 
 
-def _is_complex_task(text: str) -> bool:
-    text_lower = text.lower().strip()
 
-    simple_signals = [
-        "open ",
-        "close ",
-        "play ",
-        "what time",
-        "who is",
-        "where is",
-        "how are you",
-        "what is",
-        "set a",
-        "pause",
-        "stop",
-        "volume",
-        "skip",
-        "next",
-    ]
-    if any(text_lower.startswith(s) for s in simple_signals):
-        return False
-
-    complex_signals = [
-        "and then",
-        "after that",
-        "first ",
-        "step by step",
-        "push",
-        "commit",
-        "deploy",
-        "research",
-        "find and",
-        "open and",
-        "search and",
-        "write and",
-        "create and",
-        "help me",
-        "figure out",
-        "work out",
-        "can you",
-        "go to",
-        "navigate to",
-        "open chrome and",
-    ]
-    if any(s in text_lower for s in complex_signals):
-        return True
-
-    return False
 
 
 def _is_confirmation(text: str) -> bool:
@@ -273,11 +227,19 @@ async def assistant_loop():
                 log_system("main", "Confirmation received — resuming agent.")
                 saved_state = pending_confirmation["state"]
                 pending_confirmation = {"active": False, "state": None}
+                from brain.llm import history as chat_history
                 response = await run_agent(
                     saved_state["goal"],
                     resume_state=saved_state,
+                    chat_history=chat_history,
                 )
                 await handle_response(response)
+                if response.get("type") == "reply":
+                    chat_history.append({"role": "user", "content": saved_state["goal"]})
+                    chat_history.append({
+                        "role": "assistant",
+                        "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
+                    })
                 asyncio.create_task(store(f"User: {text}"))
                 continue
 
@@ -294,9 +256,16 @@ async def assistant_loop():
                 pending_confirmation = {"active": False, "state": None}
 
         # ── Normal routing ────────────────────────────────────────────
-        if _is_complex_task(text):
+        if is_complex(text):
             log_system("main", "Routing to agent loop.")
-            response = await run_agent(text)
+            from brain.llm import history as chat_history
+            response = await run_agent(text, chat_history=chat_history)
+            if response.get("type") == "reply":
+                chat_history.append({"role": "user", "content": text})
+                chat_history.append({
+                    "role": "assistant",
+                    "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
+                })
         else:
             response = await asyncio.to_thread(chat, text)
 

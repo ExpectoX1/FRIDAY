@@ -23,9 +23,14 @@ def _navigate_browser(url: str) -> dict:
     if not url.startswith("http"):
         url = "https://" + url
     try:
-        script = f'tell application "Google Chrome" to set URL of active tab of front window to "{url}"'
+        script = f"""
+        tell application "Google Chrome"
+            make new window
+            set URL of active tab of front window to "{url}"
+        end tell
+        """
         subprocess.run(["osascript", "-e", script], check=True)
-        return {"status": "success", "message": f"Navigated to {url}"}
+        return {"status": "success", "message": f"Navigated to {url} in a new window"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

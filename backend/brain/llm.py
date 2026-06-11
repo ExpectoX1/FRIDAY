@@ -101,3 +101,42 @@ def agent_chat(message: str, system_override: str = None) -> dict:
         return normalize_response(data)
     except json.JSONDecodeError:
         return {"thought": "Parse error", "type": "reply", "content": raw}
+
+
+def is_complex(message: str) -> bool:
+    """Classifies user utterance as SIMPLE or COMPLEX using the LLM with a keyword fallback."""
+    text_lower = message.lower().strip()
+    fallback_signals = [
+        "and then", "after that", "first ", "step by step", "push", "commit", "deploy",
+        "research", "find and", "open and", "search and", "write and", "create and",
+        "help me", "figure out", "work out", "can you", "go to", "navigate to",
+        "open chrome and", "sort", "organize", "clean", "tidy", "rename"
+    ]
+    has_fallback_signal = any(s in text_lower for s in fallback_signals)
+
+    try:
+        response = ollama.chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a routing assistant. Classify the user's request as either 'SIMPLE' or 'COMPLEX'.\n"
+                        "- 'SIMPLE': Single-step requests. Opening/closing an app, playing a specific song/movie on Spotify/Netflix directly, asking for date/time, simple questions, simple chit-chat.\n"
+                        "- 'COMPLEX': Multi-step requests. Finding and playing a YouTube video (requires searching first), batch file operations (sorting, organizing, cleaning), git tasks (commit, push), command chaining, scripting, research."
+                    )
+                },
+                {"role": "user", "content": message}
+            ],
+            format={
+                "type": "object",
+                "properties": {
+                    "classification": {"type": "string", "enum": ["SIMPLE", "COMPLEX"]}
+                },
+                "required": ["classification"]
+            }
+        )
+        data = json.loads(response.message.content.strip())
+        return data.get("classification") == "COMPLEX"
+    except Exception:
+        return has_fallback_signal
