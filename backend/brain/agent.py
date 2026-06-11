@@ -72,7 +72,6 @@ async def run_agent(
     }
     """
     # ── Resuming from confirmation ──────────────────────────────────────
-    # ── Resuming from confirmation ──────────────────────────────────────
     if resume_state:
         log_system("agent", "Resuming from confirmed command.")
         goal = resume_state["goal"]
@@ -254,12 +253,14 @@ If you need to find a project path, use search_memory first, then ls ~/Projects.
         if len(str(tool_result)) > 300:
             truncated_result += "... [Truncated]"
 
+        # FIX: Explicitly appending the tracking boolean for the LLM to inspect
         agent_history.append(
             {
                 "step": iteration,
                 "action": tool_name,
                 "args": tool_args,
                 "result": truncated_result,
+                "success": not is_error,
             }
         )
 
