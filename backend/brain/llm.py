@@ -1,3 +1,4 @@
+import os
 import ollama
 import json
 from brain.personality import get_personality
@@ -14,6 +15,104 @@ ROUTER_MODEL = "qwen2.5:3b"  # small/fast model for SIMPLE/COMPLEX routing
 # paying a multi-second reload each time. A long TTL pins both warm.
 KEEP_ALIVE = "30m"
 
+# ── Brain backend (experiment) ───────────────────────────────────────────────
+# FRIDAY_BRAIN=cloud routes chat()/agent_chat() to Groq (free, very fast) for
+# A/B testing against local gemma4. Everything else (router, memory) stays
+# local. Default is "ollama" so nothing changes unless the flag is set.
+BACKEND = os.getenv("FRIDAY_BRAIN", "ollama").lower()
+# gpt-oss-20b and llama-3.1-8b-instant emit reliable native tool_calls on Groq;
+# llama-3.3-70b intermittently returns malformed calls (tool_use_failed).
+CLOUD_MODEL = os.getenv("FRIDAY_CLOUD_MODEL", "openai/gpt-oss-20b")
+_groq_client = None
+
+
+def _groq():
+    global _groq_client
+    if _groq_client is None:
+        from openai import OpenAI
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        key = os.getenv("GROQ_API") or os.getenv("GROQ_API_KEY")
+        _groq_client = OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1")
+    return _groq_client
+
+
+def _to_openai_messages(messages: list) -> list:
+    """Translate our Ollama-style message list to OpenAI/Groq format: tool-call
+    arguments become JSON strings and tool results get a tool_call_id linking
+    them to the preceding assistant call."""
+    out, last_id, n = [], None, 0
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            n += 1
+            last_id = f"call_{n}"
+            fn = m["tool_calls"][0]["function"]
+            out.append(
+                {
+                    "role": "assistant",
+                    "content": m.get("content") or "",
+                    "tool_calls": [
+                        {
+                            "id": last_id,
+                            "type": "function",
+                            "function": {
+                                "name": fn["name"],
+                                "arguments": json.dumps(fn.get("arguments", {})),
+                            },
+                        }
+                    ],
+                }
+            )
+        elif role == "tool":
+            out.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": last_id or "call_1",
+                    "content": str(m.get("content", "")),
+                }
+            )
+        else:
+            out.append({"role": role, "content": m.get("content", "")})
+    return out
+
+
+def _call_brain(messages: list) -> dict:
+    """Run one brain turn on the active backend. Returns a normalized dict:
+    {"content": str, "tool": (name, args_dict) | None}."""
+    if BACKEND == "cloud":
+        try:
+            r = _groq().chat.completions.create(
+                model=CLOUD_MODEL,
+                messages=_to_openai_messages(messages),
+                tools=get_tools_spec(),
+            )
+            m = r.choices[0].message
+            content = (m.content or "").strip()
+            if m.tool_calls:
+                fn = m.tool_calls[0].function
+                args = (
+                    json.loads(fn.arguments)
+                    if isinstance(fn.arguments, str)
+                    else (fn.arguments or {})
+                )
+                return {"content": content, "tool": (fn.name, args)}
+            return {"content": content, "tool": None}
+        except Exception as e:
+            # Don't crash the conversation on a transient cloud error.
+            return {"content": f"Sorry Sir, the cloud brain hit an error: {e}", "tool": None}
+
+    response = ollama.chat(
+        model=MODEL, messages=messages, tools=get_tools_spec(), keep_alive=KEEP_ALIVE
+    )
+    m = response.message
+    content = (m.content or "").strip()
+    if m.tool_calls:
+        c = m.tool_calls[0].function
+        return {"content": content, "tool": (c.name, dict(c.arguments))}
+    return {"content": content, "tool": None}
+
 
 def chat(message: str) -> dict:
     """Single-shot chat — used for simple queries and tool result interpretation.
@@ -25,31 +124,19 @@ def chat(message: str) -> dict:
     history.append({"role": "user", "content": message})
     trimmed = history[-MAX_HISTORY:]
 
-    response = ollama.chat(
-        model=MODEL,
-        messages=[{"role": "system", "content": get_personality(native_tools=True)}]
-        + trimmed,
-        tools=get_tools_spec(),
-        keep_alive=KEEP_ALIVE,
-    )
+    messages = [
+        {"role": "system", "content": get_personality(native_tools=True)}
+    ] + trimmed
+    res = _call_brain(messages)
 
-    msg = response.message
-
-    if msg.tool_calls:
-        call = msg.tool_calls[0].function
+    if res["tool"]:
+        name, args = res["tool"]
         # Record the assistant's tool intent in history for continuity.
-        history.append(
-            {"role": "assistant", "content": f"[called {call.name}]"}
-        )
-        return {
-            "type": "tool",
-            "name": call.name,
-            "args": dict(call.arguments),
-        }
+        history.append({"role": "assistant", "content": f"[called {name}]"})
+        return {"type": "tool", "name": name, "args": args}
 
-    content = (msg.content or "").strip()
-    history.append({"role": "assistant", "content": content})
-    return {"type": "reply", "content": content}
+    history.append({"role": "assistant", "content": res["content"]})
+    return {"type": "reply", "content": res["content"]}
 
 
 def agent_chat(messages: list) -> dict:
@@ -63,29 +150,21 @@ def agent_chat(messages: list) -> dict:
     `raw_message` is the assistant turn to append back into `messages` so the
     model sees its own prior tool call on the next iteration.
     """
-    response = ollama.chat(
-        model=MODEL,
-        messages=messages,
-        tools=get_tools_spec(),
-        keep_alive=KEEP_ALIVE,
-    )
+    res = _call_brain(messages)
+    thought = res["content"]
 
-    msg = response.message
-    thought = (msg.content or "").strip()
-
-    if msg.tool_calls:
-        call = msg.tool_calls[0].function
-        args = dict(call.arguments)
+    if res["tool"]:
+        name, args = res["tool"]
         # Plain-dict form of the assistant turn so `messages` stays fully
         # JSON-serializable (it gets stored in pending_state and logged).
         raw_message = {
             "role": "assistant",
             "content": thought,
-            "tool_calls": [{"function": {"name": call.name, "arguments": args}}],
+            "tool_calls": [{"function": {"name": name, "arguments": args}}],
         }
         return {
             "type": "tool",
-            "name": call.name,
+            "name": name,
             "args": args,
             "thought": thought,
             "raw_message": raw_message,
@@ -111,6 +190,11 @@ COMPLEX_SIGNALS = [
 SIMPLE_SIGNALS = [
     "play ", "pause", "resume", "stop", "skip", "next song", "previous song",
     "volume", "open ", "close ", "launch ", "quit ", "what time", "what's the time",
+    # Chit-chat / greetings — pure conversation, must stay single-shot and never
+    # hit the heavy agent loop (the qwen router tends to over-classify these).
+    "how are you", "how are things", "how's it going", "how is it going",
+    "what's up", "thank you", "thanks", "good morning", "good afternoon",
+    "good evening", "good night", "tell me a joke", "who are you",
 ]
 
 

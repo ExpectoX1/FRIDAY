@@ -3,6 +3,8 @@ import threading
 import asyncio
 import time
 import json
+import re
+import random
 from voice.stt import listen, transcribe
 from voice.tts import generate, play
 from brain.llm import chat, is_complex
@@ -11,6 +13,7 @@ from tools.registry import get_tool
 from sandbox.executor import run as executor_run
 from logger import *
 from memory.store import store
+from memory.retrieve import search_memory
 
 text_queue = queue.Queue()
 audio_queue = queue.Queue()
@@ -19,6 +22,16 @@ friday_done = threading.Event()
 friday_done.set()
 
 LLM_INTERPRET = {"search_memory", "search_web"}
+
+# Spoken immediately when a request routes to the multi-step agent, so the user
+# hears feedback within ~1s instead of waiting out several seconds of silence.
+AGENT_ACK_PHRASES = [
+    "On it, Sir.",
+    "Let me look into that.",
+    "Working on it, Boss.",
+    "Give me a moment.",
+    "Right away, Sir.",
+]
 
 # Pending confirmation state — Option B proper implementation
 pending_confirmation: dict = {
@@ -70,6 +83,33 @@ def _is_denial(text: str) -> bool:
     return text.lower().strip() in DENIAL_PHRASES
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Split a reply into speakable chunks at sentence boundaries, merging
+    very short fragments so we don't get choppy one-word utterances."""
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    chunks, buf = [], ""
+    for p in parts:
+        if not p:
+            continue
+        buf = f"{buf} {p}".strip() if buf else p
+        if len(buf) >= 40:
+            chunks.append(buf)
+            buf = ""
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+def enqueue_speech(text: str):
+    """Queue a reply for TTS sentence-by-sentence. The generator/player workers
+    pipeline these, so FRIDAY starts speaking the first sentence while later
+    ones are still being synthesized — lower time-to-first-audio on long replies."""
+    if not text:
+        return
+    for chunk in _split_sentences(str(text)):
+        text_queue.put(chunk)
+
+
 # =========================================================
 # TTS WORKERS
 # =========================================================
@@ -114,14 +154,14 @@ async def handle_response(response: dict):
 
     if rtype == "reply":
         log_response(response)
-        text_queue.put(response.get("content", ""))
+        enqueue_speech(response.get("content", ""))
 
     elif rtype == "needs_confirmation":
         # Store pending state and ask user
         pending_confirmation["active"] = True
         pending_confirmation["state"] = response.get("pending_state")
         log_system("main", "Pending confirmation stored.")
-        text_queue.put(response.get("content", "Should I proceed Sir?"))
+        enqueue_speech(response.get("content", "Should I proceed Sir?"))
 
     elif rtype == "tool":
         name = response.get("name")
@@ -168,18 +208,18 @@ async def handle_response(response: dict):
                 elif name == "search_web":
                     prompt = f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
                 follow_up = await asyncio.to_thread(chat, prompt)
-                text_queue.put(follow_up.get("content", str(result)))
+                enqueue_speech(follow_up.get("content", str(result)))
             except Exception as e:
                 log_error(f"LLM follow-up failed: {e}")
-                text_queue.put(str(result)[:200])
+                enqueue_speech(str(result)[:200])
             return
 
         if isinstance(result, dict):
-            text_queue.put(
+            enqueue_speech(
                 result.get("message") or result.get("content") or "Done Sir."
             )
         else:
-            text_queue.put(result if result else "Done Sir.")
+            enqueue_speech(result if result else "Done Sir.")
 
     else:
         log_error(response.get("content", "Unknown error"))
@@ -200,7 +240,15 @@ async def assistant_loop():
     if startup_audio is not None:
         audio_queue.put(startup_audio)
 
-    await asyncio.to_thread(chat, "System initialization ping.")
+    # Warm every cold path in parallel while the startup line plays, so the
+    # first real request doesn't pay the model-load tax: brain (gemma4),
+    # router (qwen3b), and the memory stack (GLiNER + Neo4j).
+    await asyncio.gather(
+        asyncio.to_thread(chat, "System initialization ping."),
+        asyncio.to_thread(is_complex, "warm up the router"),
+        asyncio.to_thread(search_memory, "warm up"),
+    )
+    log_system("main", "Models warmed (brain, router, memory).")
 
     ready_audio = generate("All systems online Sir, ready when you are.")
     if ready_audio is not None:
@@ -258,6 +306,10 @@ async def assistant_loop():
         # ── Normal routing ────────────────────────────────────────────
         if is_complex(text):
             log_system("main", "Routing to agent loop.")
+            # Immediate audible ack so the user isn't met with silence while the
+            # multi-step loop runs (several seconds of inference). Plays while
+            # run_agent works.
+            enqueue_speech(random.choice(AGENT_ACK_PHRASES))
             from brain.llm import history as chat_history
             response = await run_agent(text, chat_history=chat_history)
             if response.get("type") == "reply":

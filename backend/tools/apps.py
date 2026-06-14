@@ -68,7 +68,16 @@ def open_app(name: str) -> dict:
         check = subprocess.run(
             ["pgrep", "-x", normalized], capture_output=True, text=True
         )
-        subprocess.run(["open", "-a", normalized])
+        result = subprocess.run(
+            ["open", "-a", normalized], capture_output=True, text=True
+        )
+        # `open -a` fails (non-zero, "Unable to find application") for apps that
+        # aren't installed — don't claim success in that case.
+        if result.returncode != 0:
+            return {
+                "status": "error",
+                "message": f"I couldn't find an app called {name} on this Mac, Sir.",
+            }
         already_open = check.returncode == 0
         msg = random.choice(ALREADY_OPEN_RESPONSES if already_open else OPEN_RESPONSES)
         return {"status": "success", "message": msg}
