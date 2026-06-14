@@ -151,7 +151,11 @@ CRITICAL MEMORY SEARCH MANDATE:
 
 Tool usage rules:
 * You have tools available. Call a tool whenever it helps complete the request.
-* To open an app: use open_app, never run_shell.
+* To open a native Mac app (Spotify, Notes, Terminal, Finder): use open_app.
+* To open a WEBSITE or web service (Twitter, YouTube, Gmail, GitHub), including
+  phrasings like "open Twitter on Chrome", "open X in the browser", or "go to X":
+  use navigate_browser with the site's URL (e.g. https://twitter.com), NOT open_app.
+  open_app only opens the browser itself, not a specific site.
 * To navigate a browser: use navigate_browser, never run_shell.
 * If unsure of an app's exact name: call get_running_apps first.
 * run_shell is ONLY for terminal commands — git, file operations, system info.

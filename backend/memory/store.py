@@ -40,6 +40,21 @@ SKIP_PATTERNS = [
 
 CORRECTION_KEYWORDS = ["actually", "meant", "correction", "wait", "no i"]
 
+# Self-statements GLiNER often can't pull an entity from ("I'm 24 years old"),
+# but which are clearly worth storing. If present, anchor the fact to Siddharth
+# so the pipeline still runs.
+SELF_FACT_KEYWORDS = [
+    "years old",
+    "my age",
+    "my name is",
+    "i live in",
+    "i'm from",
+    "i am from",
+    "i work as",
+    "my birthday",
+    "i was born",
+]
+
 # Utterances that are never worth storing regardless of entities
 NEVER_STORE_PATTERNS = [
     "what time",
@@ -143,7 +158,9 @@ async def store(text: str, force_sync: bool = False):
 
     if not entities:
         text_lower = text.lower().strip()
-        if any(word in text_lower for word in CORRECTION_KEYWORDS):
+        if any(word in text_lower for word in CORRECTION_KEYWORDS) or any(
+            word in text_lower for word in SELF_FACT_KEYWORDS
+        ):
             entities = ["Siddharth"]
         else:
             log_system("memory", f"Skipped (pattern): {text[:50]}")
