@@ -131,8 +131,10 @@ def chat(message: str) -> dict:
 
     if res["tool"]:
         name, args = res["tool"]
-        # Record the assistant's tool intent in history for continuity.
-        history.append({"role": "assistant", "content": f"[called {name}]"})
+        # Don't write a synthetic "[called X]" turn into history — the model
+        # echoes it back as a reply on the next turn. Drop the triggering user
+        # message too so history stays clean conversational text only.
+        history.pop()
         return {"type": "tool", "name": name, "args": args}
 
     history.append({"role": "assistant", "content": res["content"]})
