@@ -5,11 +5,10 @@ from memory.schemas import GraphDelta
 from memory.profile import get_profile_prompt
 from logger import log_system
 
-# Reuse the brain model (already resident) instead of loading a second large
-# model. Running gemma3:12b here alongside gemma4 evicted the brain from memory
-# and forced a multi-second reload on the next user turn. One big model + the
-# small qwen3b (router/taxonomy) coexist without thrashing.
-MODEL = "gemma4:latest"
+# Share the brain model (qwen2.5:7b) so only one ~5GB model stays resident.
+# Loading a second large model here evicted the brain and caused multi-second
+# reloads on the next user turn.
+MODEL = "qwen2.5:7b"
 
 
 def build_prompt(text: str, entities: list[str], current_state: list[dict]) -> str:
