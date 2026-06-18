@@ -5,7 +5,9 @@ import time
 import json
 import re
 import random
-from voice.stt import listen, transcribe
+import os
+import sounddevice as sd
+from voice.stt import listen, transcribe, rms, _input_device, SAMPLE_RATE, BLOCK_DURATION
 from voice.tts import generate, play
 from brain.llm import chat, is_complex
 from brain.agent import run_agent
@@ -20,6 +22,17 @@ audio_queue = queue.Queue()
 is_speaking = threading.Event()
 friday_done = threading.Event()
 friday_done.set()
+
+# ── Barge-in (interrupt FRIDAY while she's speaking) ─────────────────────────
+# While speaking, a monitor watches the mic; sustained input LOUDER than her
+# own speaker bleed counts as an interruption -> stop playback and listen.
+# Threshold is well above the normal speech threshold to avoid self-triggering
+# on her own voice; tune with FRIDAY_BARGE_THRESHOLD (lower = more sensitive).
+# Works best with headphones; set FRIDAY_BARGE_IN=0 to disable.
+BARGE_IN = os.getenv("FRIDAY_BARGE_IN", "1") == "1"
+BARGE_THRESHOLD = float(os.getenv("FRIDAY_BARGE_THRESHOLD", "0.06"))
+BARGE_BLOCKS = 2  # ~0.5s of sustained loud input before we treat it as a barge-in
+interrupt_event = threading.Event()
 
 LLM_INTERPRET = {"search_memory", "search_web"}
 
@@ -115,6 +128,55 @@ def enqueue_speech(text: str):
 # =========================================================
 
 
+def _drain_queue(q: queue.Queue):
+    try:
+        while True:
+            q.get_nowait()
+    except queue.Empty:
+        pass
+
+
+def barge_in_monitor():
+    """While FRIDAY is speaking, watch the mic and interrupt on sustained loud
+    input (the user talking over her). Only runs during speech, so it never
+    contends with the main listen() stream."""
+    if not BARGE_IN:
+        return
+    block = int(SAMPLE_RATE * BLOCK_DURATION)
+    while True:
+        is_speaking.wait()  # idle until she starts speaking
+        try:
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                blocksize=block, device=_input_device(),
+            )
+            stream.start()
+        except Exception:
+            time.sleep(0.2)
+            continue
+        loud = 0
+        while is_speaking.is_set():
+            try:
+                chunk, _ = stream.read(block)
+            except Exception:
+                break
+            if rms(chunk.flatten()) > BARGE_THRESHOLD:
+                loud += 1
+                if loud >= BARGE_BLOCKS:
+                    log_system("main", "Barge-in — stopping playback to listen.")
+                    interrupt_event.set()
+                    sd.stop()
+                    _drain_queue(audio_queue)
+                    _drain_queue(text_queue)
+                    is_speaking.clear()
+                    friday_done.set()
+                    break
+            else:
+                loud = 0
+        stream.stop()
+        stream.close()
+
+
 def tts_generator_worker():
     while True:
         text = text_queue.get()
@@ -122,7 +184,7 @@ def tts_generator_worker():
             break
         friday_done.clear()
         audio = generate(text)
-        if audio is not None:
+        if audio is not None and not interrupt_event.is_set():
             audio_queue.put(audio)
         text_queue.task_done()
 
@@ -132,6 +194,9 @@ def tts_player_worker():
         audio = audio_queue.get()
         if audio is None:
             break
+        if interrupt_event.is_set():  # interrupted — drop pending audio
+            audio_queue.task_done()
+            continue
         is_speaking.set()
         friday_done.clear()
         play(audio)
@@ -260,6 +325,9 @@ async def assistant_loop():
         while not friday_done.is_set():
             await asyncio.sleep(0.05)
 
+        # Fresh turn — clear any prior interrupt so the workers aren't gated.
+        interrupt_event.clear()
+
         audio = await asyncio.to_thread(listen)
         text = await asyncio.to_thread(transcribe, audio)
 
@@ -331,8 +399,10 @@ async def assistant_loop():
 if __name__ == "__main__":
     generator_thread = threading.Thread(target=tts_generator_worker, daemon=True)
     player_thread = threading.Thread(target=tts_player_worker, daemon=True)
+    barge_thread = threading.Thread(target=barge_in_monitor, daemon=True)
 
     generator_thread.start()
     player_thread.start()
+    barge_thread.start()
 
     asyncio.run(assistant_loop())
