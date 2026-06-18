@@ -7,6 +7,7 @@ from tools.apps import open_app, close_app
 from tools.datetime_tool import get_date_time
 from tools.media import play_media
 from tools.mac_core import get_running_apps, take_screenshot
+from tools.vision import look_at_screen
 from memory.retrieve import search_memory
 
 
@@ -106,9 +107,14 @@ TOOLS: dict[str, Tool] = {
         "function": get_running_apps,
     },
     "take_screenshot": {
-        "description": "Takes a screenshot of the current screen and saves it. Use for visual verification or when you need to see what is on screen.",
+        "description": "Takes a screenshot of the current screen and saves it to a file. Use only when the user explicitly wants a screenshot saved, NOT to look at the screen.",
         "args": [],
         "function": take_screenshot,
+    },
+    "look_at_screen": {
+        "description": "Look at the user's screen and answer a question about it. Use whenever the user asks what is on their screen, to check or describe what's displayed, whether something looks right/arranged, or to read on-screen text. Pass the user's question.",
+        "args": ["question"],
+        "function": look_at_screen,
     },
 }
 
@@ -130,6 +136,10 @@ ARG_DETAILS: dict[str, dict] = {
     "path": {"type": "string", "description": "Absolute file path."},
     "content": {"type": "string", "description": "Content to write to the file."},
     "query": {"type": "string", "description": "The search query."},
+    "question": {
+        "type": "string",
+        "description": "The user's question about what is on the screen.",
+    },
     "url": {"type": "string", "description": "The URL to navigate to."},
     "title": {"type": "string", "description": "Title of the song, show, or movie."},
     "service": {
