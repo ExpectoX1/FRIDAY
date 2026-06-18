@@ -1,11 +1,24 @@
 from faster_whisper import WhisperModel
 import sounddevice as sd
 import numpy as np
+import os
 
 SAMPLE_RATE = 16000
 BLOCK_DURATION = 0.25
 SILENCE_THRESHOLD = 0.015
 MAX_SILENCE_SECONDS = 0.8
+
+
+def _input_device():
+    """Pick the mic. A hardcoded index breaks whenever the device list shuffles
+    (plugging in headphones, reboots), so default to the system input device.
+    Override with FRIDAY_MIC_DEVICE if you have a specific mic in mind."""
+    override = os.getenv("FRIDAY_MIC_DEVICE")
+    if override is not None:
+        return int(override)
+    default_in = sd.default.device[0]
+    return default_in if default_in is not None and default_in >= 0 else None
+
 
 model = WhisperModel("base.en", device="auto", compute_type="int8")
 
@@ -23,7 +36,7 @@ def listen():
         channels=1,
         dtype="float32",
         blocksize=int(SAMPLE_RATE * BLOCK_DURATION),
-        device=2
+        device=_input_device(),
     )
 
     stream.start()
