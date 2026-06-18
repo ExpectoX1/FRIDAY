@@ -2,11 +2,15 @@ from faster_whisper import WhisperModel
 import sounddevice as sd
 import numpy as np
 import os
+from collections import deque
 
 SAMPLE_RATE = 16000
 BLOCK_DURATION = 0.25
-SILENCE_THRESHOLD = 0.015
-MAX_SILENCE_SECONDS = 0.8
+SILENCE_THRESHOLD = 0.012
+MAX_SILENCE_SECONDS = 1.1  # don't cut off on a mid-sentence pause
+# Keep a short rolling buffer of audio from *before* speech is detected, so the
+# quiet onset of the first word isn't clipped (a big cause of misheard input).
+PRE_ROLL_BLOCKS = 3  # ~0.75s lead-in
 
 
 def _input_device():
@@ -20,7 +24,10 @@ def _input_device():
     return default_in if default_in is not None and default_in >= 0 else None
 
 
-model = WhisperModel("base.en", device="auto", compute_type="int8")
+# small.en is markedly more accurate than base.en and still fast on Apple
+# silicon (int8). Override with FRIDAY_STT_MODEL (e.g. base.en for max speed).
+STT_MODEL = os.getenv("FRIDAY_STT_MODEL", "small.en")
+model = WhisperModel(STT_MODEL, device="auto", compute_type="int8")
 
 def rms(chunk):
     return np.sqrt(np.mean(np.square(chunk)))
@@ -41,20 +48,27 @@ def listen():
 
     stream.start()
 
+    pre_roll = deque(maxlen=PRE_ROLL_BLOCKS)
+
     while True:
         chunk, _ = stream.read(int(SAMPLE_RATE * BLOCK_DURATION))
         chunk = chunk.flatten()
         volume = rms(chunk)
 
-        if volume > SILENCE_THRESHOLD:
-            started = True
-            silence_time = 0
+        if not started:
+            pre_roll.append(chunk)
+            if volume > SILENCE_THRESHOLD:
+                started = True
+                silence_time = 0
+                recording.extend(pre_roll)  # include the lead-in audio
+        else:
             recording.append(chunk)
-        elif started:
-            recording.append(chunk)
-            silence_time += BLOCK_DURATION
-            if silence_time >= MAX_SILENCE_SECONDS:
-                break
+            if volume > SILENCE_THRESHOLD:
+                silence_time = 0
+            else:
+                silence_time += BLOCK_DURATION
+                if silence_time >= MAX_SILENCE_SECONDS:
+                    break
 
     stream.stop()
     stream.close()
