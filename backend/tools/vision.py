@@ -2,9 +2,10 @@ import os
 import subprocess
 import ollama
 
-# gemma3:12b is multimodal — vision runs fully on-device. Override with
-# FRIDAY_VISION_MODEL if you pull a smaller/faster vision model (e.g. moondream).
-VISION_MODEL = os.getenv("FRIDAY_VISION_MODEL", "gemma3:12b")
+# qwen2.5vl:3b reads the screen accurately (incl. on-screen text) and is fast
+# (~1s warm, vs ~5s for gemma3:12b) and small enough to coexist with the gemma4
+# brain without thrashing memory. Override with FRIDAY_VISION_MODEL.
+VISION_MODEL = os.getenv("FRIDAY_VISION_MODEL", "qwen2.5vl:3b")
 SCREENSHOT_PATH = "/tmp/friday_vision.png"
 
 # Unload the vision model shortly after use so it doesn't sit in memory evicting
