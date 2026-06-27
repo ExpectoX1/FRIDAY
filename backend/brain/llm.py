@@ -10,7 +10,9 @@ MAX_HISTORY = 4
 
 # qwen2.5:7b: equal tool-selection accuracy to gemma4 but ~2.8x faster
 # (~700ms vs 2-6s typical) and half the size — benchmarked in bench_brain.py.
-MODEL = "qwen2.5:7b"
+# Override for A/B testing, e.g. FRIDAY_LOCAL_MODEL=gemma4:latest (gemma3 does
+# NOT support native tools, so it can't be the brain).
+MODEL = os.getenv("FRIDAY_LOCAL_MODEL", "qwen2.5:7b")
 ROUTER_MODEL = "qwen2.5:3b"  # small/fast model for SIMPLE/COMPLEX routing
 
 # Keep models resident between calls. We alternate brain (gemma4) and router
