@@ -26,7 +26,7 @@ def _input_device():
 
 # small.en is markedly more accurate than base.en and still fast on Apple
 # silicon (int8). Override with FRIDAY_STT_MODEL (e.g. base.en for max speed).
-STT_MODEL = os.getenv("FRIDAY_STT_MODEL", "small.en")
+STT_MODEL = os.getenv("FRIDAY_STT_MODEL", "systran/faster-distil-whisper-small.en")
 model = WhisperModel(STT_MODEL, device="auto", compute_type="int8")
 
 def rms(chunk):

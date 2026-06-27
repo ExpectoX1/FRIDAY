@@ -38,6 +38,16 @@ def generate(text: str):
     return np.concatenate(chunks)
 
 
+def generate_stream(text: str):
+    """Generator that yields audio chunks as they are synthesized by Kokoro."""
+    text = clean_for_tts(text)
+    if not text:
+        return
+    for _, _, audio in pipeline(text, voice='af_heart', speed=1.0):
+        if audio is not None:
+            yield audio
+
+
 def play(audio: np.ndarray):
     if audio is None:
         return

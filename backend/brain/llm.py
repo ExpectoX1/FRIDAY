@@ -128,6 +128,42 @@ def _call_brain(messages: list) -> dict:
     return {"content": content, "tool": None}
 
 
+def call_brain_stream(messages: list):
+    """Yields either ("token", text_chunk) or ("tool", (name, args)) or ("reply", full_content)"""
+    if BACKEND == "cloud":
+        res = _call_brain(messages)
+        if res.get("tool"):
+            yield "tool", res["tool"]
+        else:
+            yield "reply", res["content"]
+        return
+
+    response_stream = ollama.chat(
+        model=MODEL, messages=messages, tools=get_tools_spec(),
+        keep_alive=KEEP_ALIVE, think=False, stream=True
+    )
+
+    full_content = ""
+    tool_calls = []
+
+    for chunk in response_stream:
+        m = chunk.message
+        if m.tool_calls:
+            for tc in m.tool_calls:
+                tool_calls.append(tc)
+        
+        if m.content:
+            full_content += m.content
+            if not tool_calls:
+                yield "token", m.content
+
+    if tool_calls:
+        tc = tool_calls[-1].function
+        yield "tool", (tc.name, dict(tc.arguments))
+    else:
+        yield "reply", full_content.strip()
+
+
 # Most recent tool result, injected into the next single-shot turn so the user
 # can refer back to it ("open it", "open the chords", "the second one"). Single-
 # shot otherwise forgets tool output between turns, which made follow-ups fail.
@@ -206,6 +242,44 @@ def chat(message: str) -> dict:
     return {"type": "reply", "content": res["content"]}
 
 
+def chat_stream(message: str):
+    """Single-shot chat with token streaming. Yields either:
+    - ("token", text_chunk)
+    - ("tool", (name, args))
+    - ("reply", full_content)
+    """
+    global history
+
+    ref = _referential_open(message)
+    if ref:
+        yield "tool", (ref["name"], ref["args"])
+        return
+
+    history.append({"role": "user", "content": message})
+    trimmed = history[-MAX_HISTORY:]
+
+    messages = [{"role": "system", "content": _system_context()}] + trimmed
+
+    has_tool = False
+    full_content = ""
+
+    for event_type, data in call_brain_stream(messages):
+        if event_type == "token":
+            full_content += data
+            yield "token", data
+        elif event_type == "tool":
+            has_tool = True
+            name, args = data
+            history.pop()
+            yield "tool", (name, args)
+        elif event_type == "reply":
+            full_content = data
+
+    if not has_tool:
+        history.append({"role": "assistant", "content": full_content})
+        yield "reply", full_content
+
+
 def agent_chat(messages: list) -> dict:
     """
     Agent loop chat — native tool calling over a real message list.
@@ -238,6 +312,63 @@ def agent_chat(messages: list) -> dict:
         }
 
     return {"type": "reply", "content": thought, "thought": thought}
+
+
+def agent_chat_stream(messages: list):
+    """Agent loop chat with token streaming. Yields either:
+    - ("token", text_chunk)
+    - ("tool", tool_dict)
+    - ("reply", reply_dict)
+    """
+    if BACKEND == "cloud":
+        res = agent_chat(messages)
+        if res["type"] == "tool":
+            yield "tool", res
+        else:
+            yield "reply", res
+        return
+
+    response_stream = ollama.chat(
+        model=MODEL, messages=messages, tools=get_tools_spec(),
+        keep_alive=KEEP_ALIVE, think=False, stream=True
+    )
+
+    full_content = ""
+    tool_calls = []
+
+    for chunk in response_stream:
+        m = chunk.message
+        if m.tool_calls:
+            for tc in m.tool_calls:
+                tool_calls.append(tc)
+        
+        if m.content:
+            full_content += m.content
+            if not tool_calls:
+                yield "token", m.content
+
+    if tool_calls:
+        tc = tool_calls[-1].function
+        name = tc.name
+        args = dict(tc.arguments)
+        raw_message = {
+            "role": "assistant",
+            "content": full_content,
+            "tool_calls": [{"function": {"name": name, "arguments": args}}],
+        }
+        yield "tool", {
+            "type": "tool",
+            "name": name,
+            "args": args,
+            "thought": full_content,
+            "raw_message": raw_message,
+        }
+    else:
+        yield "reply", {
+            "type": "reply",
+            "content": full_content.strip(),
+            "thought": full_content.strip(),
+        }
 
 
 COMPLEX_SIGNALS = [
