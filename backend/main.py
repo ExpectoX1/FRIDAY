@@ -54,6 +54,10 @@ pending_confirmation: dict = {
     "state": None,
 }
 
+# Set once the voice loop's asyncio loop is running, so the menu-bar thread can
+# schedule approve/deny coroutines onto it via run_coroutine_threadsafe.
+MAIN_LOOP = None
+
 CONFIRMATION_PHRASES = {
     "yes",
     "yes go ahead",
@@ -319,8 +323,50 @@ async def handle_response(response: dict):
 # =========================================================
 
 
-async def assistant_loop():
+async def approve_pending():
+    """Resume a pending confirmation — called by either voice ('yes') or the
+    menu-bar Approve button."""
     global pending_confirmation
+    if not pending_confirmation["active"]:
+        return
+    log_system("main", "Confirmation approved — resuming agent.")
+    saved_state = pending_confirmation["state"]
+    pending_confirmation = {"active": False, "state": None}
+    from brain.llm import history as chat_history
+    response = await run_agent(
+        saved_state["goal"], resume_state=saved_state, chat_history=chat_history
+    )
+    await handle_response(response)
+    if response.get("type") == "reply":
+        chat_history.append({"role": "user", "content": saved_state["goal"]})
+        chat_history.append({
+            "role": "assistant",
+            "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."}),
+        })
+
+
+async def deny_pending():
+    """Cancel a pending confirmation — called by voice ('no') or menu-bar Deny."""
+    global pending_confirmation
+    if not pending_confirmation["active"]:
+        return
+    log_system("main", "Confirmation denied — cancelling.")
+    pending_confirmation = {"active": False, "state": None}
+    enqueue_speech("Understood Sir, cancelled.")
+
+
+def _resolve_from_menubar(approve: bool):
+    """Thread-safe entry point for the menu-bar buttons: schedule approve/deny
+    onto the voice loop's asyncio loop."""
+    if MAIN_LOOP is None or not pending_confirmation["active"]:
+        return
+    coro = approve_pending() if approve else deny_pending()
+    asyncio.run_coroutine_threadsafe(coro, MAIN_LOOP)
+
+
+async def assistant_loop():
+    global pending_confirmation, MAIN_LOOP
+    MAIN_LOOP = asyncio.get_running_loop()
 
     log_system("main", "FRIDAY ONLINE")
 
@@ -363,29 +409,12 @@ async def assistant_loop():
         # ── Confirmation flow ─────────────────────────────────────────
         if pending_confirmation["active"]:
             if _is_confirmation(text):
-                log_system("main", "Confirmation received — resuming agent.")
-                saved_state = pending_confirmation["state"]
-                pending_confirmation = {"active": False, "state": None}
-                from brain.llm import history as chat_history
-                response = await run_agent(
-                    saved_state["goal"],
-                    resume_state=saved_state,
-                    chat_history=chat_history,
-                )
-                await handle_response(response)
-                if response.get("type") == "reply":
-                    chat_history.append({"role": "user", "content": saved_state["goal"]})
-                    chat_history.append({
-                        "role": "assistant",
-                        "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
-                    })
+                await approve_pending()
                 asyncio.create_task(store(f"User: {text}"))
                 continue
 
             elif _is_denial(text):
-                log_system("main", "Confirmation denied — cancelling.")
-                pending_confirmation = {"active": False, "state": None}
-                text_queue.put("Understood Sir, cancelled.")
+                await deny_pending()
                 asyncio.create_task(store(f"User: {text}"))
                 continue
 
@@ -419,6 +448,52 @@ async def assistant_loop():
         await asyncio.sleep(0.01)
 
 
+# =========================================================
+# MENU BAR APP
+# =========================================================
+
+# Toggle the menu-bar UI. When off (or rumps missing), run the plain voice loop.
+MENUBAR = os.getenv("FRIDAY_MENUBAR", "1") == "1"
+
+
+def _run_voice_loop():
+    asyncio.run(assistant_loop())
+
+
+def _start_menubar():
+    """Menu-bar app with a click-to-approve confirmation button. Voice 'yes/no'
+    still works in parallel — both resolve the same pending confirmation."""
+    import rumps
+
+    class FridayBar(rumps.App):
+        def __init__(self):
+            super().__init__("FRIDAY", title="🤖")
+            self.status_item = rumps.MenuItem("FRIDAY — online")
+            self.approve_item = rumps.MenuItem("✅ Approve", callback=self._approve)
+            self.deny_item = rumps.MenuItem("❌ Deny", callback=self._deny)
+            self.menu = [self.status_item, None, self.approve_item, self.deny_item]
+            rumps.Timer(self._refresh, 0.4).start()
+
+        def _refresh(self, _):
+            if pending_confirmation["active"]:
+                cmd = (pending_confirmation["state"] or {}).get("confirmed_command", "")
+                self.title = "⚠️"
+                self.status_item.title = f"Approve: {cmd[:50]}"
+            else:
+                self.title = "🤖"
+                self.status_item.title = "FRIDAY — online"
+
+        def _approve(self, _):
+            _resolve_from_menubar(approve=True)
+
+        def _deny(self, _):
+            _resolve_from_menubar(approve=False)
+
+    # Voice loop runs in a background thread; rumps owns the main thread.
+    threading.Thread(target=_run_voice_loop, daemon=True).start()
+    FridayBar().run()
+
+
 if __name__ == "__main__":
     generator_thread = threading.Thread(target=tts_generator_worker, daemon=True)
     player_thread = threading.Thread(target=tts_player_worker, daemon=True)
@@ -428,4 +503,11 @@ if __name__ == "__main__":
     player_thread.start()
     barge_thread.start()
 
-    asyncio.run(assistant_loop())
+    if MENUBAR:
+        try:
+            _start_menubar()
+        except Exception as e:
+            log_error(f"Menu bar failed ({e}); falling back to voice-only.")
+            _run_voice_loop()
+    else:
+        _run_voice_loop()
