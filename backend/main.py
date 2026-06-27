@@ -28,8 +28,10 @@ friday_done.set()
 # own speaker bleed counts as an interruption -> stop playback and listen.
 # Threshold is well above the normal speech threshold to avoid self-triggering
 # on her own voice; tune with FRIDAY_BARGE_THRESHOLD (lower = more sensitive).
-# Works best with headphones; set FRIDAY_BARGE_IN=0 to disable.
-BARGE_IN = os.getenv("FRIDAY_BARGE_IN", "1") == "1"
+# Default OFF: on laptop speakers her own voice bleeds into the mic and
+# self-triggers the interrupt (no echo cancellation). Enable with headphones via
+# FRIDAY_BARGE_IN=1; tune sensitivity with FRIDAY_BARGE_THRESHOLD.
+BARGE_IN = os.getenv("FRIDAY_BARGE_IN", "0") == "1"
 BARGE_THRESHOLD = float(os.getenv("FRIDAY_BARGE_THRESHOLD", "0.06"))
 BARGE_BLOCKS = 2  # ~0.5s of sustained loud input before we treat it as a barge-in
 interrupt_event = threading.Event()
