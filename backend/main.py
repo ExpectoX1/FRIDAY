@@ -17,6 +17,7 @@ from sandbox.executor import run as executor_run
 from logger import *
 from memory.store import store
 from memory.retrieve import search_memory
+from bridge import state_bus, server as bridge_server
 
 text_queue = queue.Queue()
 audio_queue = queue.Queue()
@@ -150,6 +151,7 @@ def enqueue_speech(text: str):
     if not text:
         return
     _last_spoken = str(text)
+    state_bus.set_state(replyPreview=str(text)[:200])
     for chunk in _split_sentences(str(text)):
         text_queue.put(chunk)
 
@@ -263,12 +265,14 @@ def tts_player_worker():
             continue
         is_speaking.set()
         friday_done.clear()
+        state_bus.set_state("speaking", message="Speaking...")
         play(audio)
         audio_queue.task_done()
         if audio_queue.empty() and text_queue.empty():
             is_speaking.clear()
             time.sleep(0.5)
             friday_done.set()
+            state_bus.set_state("idle", message="", outcome="neutral")
 
 
 # =========================================================
@@ -290,6 +294,11 @@ async def handle_response(response: dict):
         pending_confirmation["active"] = True
         pending_confirmation["state"] = response.get("pending_state")
         log_system("main", "Pending confirmation stored.")
+        cmd = (response.get("pending_state") or {}).get("confirmed_command", "")
+        state_bus.set_state(
+            "approval_required", requiresApproval=True, pendingCommand=cmd,
+            message=response.get("content", "Approve?"),
+        )
         enqueue_speech(response.get("content", "Should I proceed Sir?"))
 
     elif rtype == "tool":
@@ -357,7 +366,8 @@ async def handle_response(response: dict):
 
     else:
         log_error(response.get("content", "Unknown error"))
-        text_queue.put(response.get("content", "Something went wrong Sir."))
+        state_bus.set_state("error", outcome="error", message=response.get("content", "Something went wrong"))
+        enqueue_speech(response.get("content", "Something went wrong Sir."))
 
 
 # =========================================================
@@ -409,6 +419,8 @@ def _resolve_from_menubar(approve: bool):
 async def assistant_loop():
     global pending_confirmation, MAIN_LOOP
     MAIN_LOOP = asyncio.get_running_loop()
+    # Let the Island bridge resolve confirmations via the same hooks as voice/menu
+    bridge_server.configure(MAIN_LOOP, approve_pending, deny_pending)
 
     log_system("main", "FRIDAY ONLINE")
 
@@ -439,18 +451,23 @@ async def assistant_loop():
         # Fresh turn — clear any prior interrupt so the workers aren't gated.
         interrupt_event.clear()
 
+        state_bus.set_state("listening", message="Listening...", tool=None, replyPreview="")
         audio = await asyncio.to_thread(listen)
+        state_bus.set_state("transcribing", message="Transcribing...")
         text = await asyncio.to_thread(transcribe, audio)
 
         if not text.strip() or len(text.strip()) < 3:
+            state_bus.set_state("idle", message="")
             continue
 
         if _is_self_echo(text):
             log_system("main", "Ignored self-echo (heard my own voice).")
+            state_bus.set_state("idle", message="")
             continue
 
         print(f"You: {text}")
         log_user(text)
+        state_bus.set_state("thinking", message="Thinking...", transcript=text)
 
         # ── Confirmation flow ─────────────────────────────────────────
         if pending_confirmation["active"]:
@@ -574,10 +591,15 @@ if __name__ == "__main__":
     generator_thread = threading.Thread(target=tts_generator_worker, daemon=True)
     player_thread = threading.Thread(target=tts_player_worker, daemon=True)
     barge_thread = threading.Thread(target=barge_in_monitor, daemon=True)
+    # Local bridge for the FRIDAY Island Mac app (state WS + approval/health HTTP)
+    # on 127.0.0.1:8767. Purely additive — the voice app runs identically whether
+    # or not anything connects.
+    bridge_thread = threading.Thread(target=bridge_server.run, daemon=True)
 
     generator_thread.start()
     player_thread.start()
     barge_thread.start()
+    bridge_thread.start()
 
     if MENUBAR:
         try:

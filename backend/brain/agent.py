@@ -1,11 +1,12 @@
 import json
 import asyncio
 import os
-from brain.llm import agent_chat
+from brain.llm import agent_chat, agent_chat_stream
 from brain.personality import get_personality
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run, execute as executor_execute
 from logger import log_system, log_tool, log_result, log_error
+from bridge import state_bus
 
 MAX_ITERATIONS = 10
 MAX_RETRIES_PER_TOOL = 3
@@ -89,6 +90,7 @@ async def run_agent(
     user_utterance: str,
     resume_state: dict = None,
     chat_history: list = None,
+    on_token_callback = None,
 ) -> dict:
     """
     Orchestrates the multi-step Plan-Execute-Observe loop using native tool
@@ -186,8 +188,19 @@ async def run_agent(
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         log_system("agent", f"Iteration {iteration}/{MAX_ITERATIONS}")
+        state_bus.set_state("thinking", message="Working on it...", tool=None)
 
-        response = await asyncio.to_thread(agent_chat, messages)
+        def run_stream():
+            res = None
+            for event_type, data in agent_chat_stream(messages):
+                if event_type == "token":
+                    if on_token_callback:
+                        on_token_callback(data)
+                elif event_type == "tool" or event_type == "reply":
+                    res = data
+            return res
+
+        response = await asyncio.to_thread(run_stream)
 
         thought = response.get("thought", "")
         if thought:
@@ -226,6 +239,7 @@ async def run_agent(
             return {"type": "reply", "content": thought or "Done, Sir."}
 
         log_tool("agent", tool_name, tool_args)
+        state_bus.set_state("tool_running", tool=tool_name, message=f"Running {tool_name}...")
 
         tool_result = None
         try:
