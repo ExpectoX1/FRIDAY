@@ -90,12 +90,28 @@ DENIAL_PHRASES = {
 
 
 
+_AFFIRM_WORDS = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "proceed", "confirm"}
+
+
+def _normalize_reply(text: str) -> str:
+    # STT adds trailing punctuation ("Yes.") which broke exact-match confirmation.
+    return text.lower().strip().strip(".!?,").strip()
+
+
 def _is_confirmation(text: str) -> bool:
-    return text.lower().strip() in CONFIRMATION_PHRASES
+    t = _normalize_reply(text)
+    if not t:
+        return False
+    # Match known phrases, or any reply that simply starts with an affirmation
+    # ("yes", "yes go for it", "yeah do it").
+    return t in CONFIRMATION_PHRASES or t.split()[0] in _AFFIRM_WORDS
 
 
 def _is_denial(text: str) -> bool:
-    return text.lower().strip() in DENIAL_PHRASES
+    t = _normalize_reply(text)
+    if not t:
+        return False
+    return t in DENIAL_PHRASES or t.split()[0] in {"no", "nope", "cancel", "stop", "abort"}
 
 
 def _split_sentences(text: str) -> list[str]:
