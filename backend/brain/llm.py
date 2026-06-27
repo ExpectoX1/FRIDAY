@@ -1,4 +1,5 @@
 import os
+import re
 import ollama
 import json
 from brain.personality import get_personality
@@ -116,6 +117,52 @@ def _call_brain(messages: list) -> dict:
     return {"content": content, "tool": None}
 
 
+# Most recent tool result, injected into the next single-shot turn so the user
+# can refer back to it ("open it", "open the chords", "the second one"). Single-
+# shot otherwise forgets tool output between turns, which made follow-ups fail.
+_last_result: tuple | None = None
+
+
+def set_last_result(label: str, content) -> None:
+    global _last_result
+    text = str(content).strip()
+    _last_result = (label, text[:1500]) if text else None
+
+
+def _system_context() -> str:
+    base = get_personality(native_tools=True)
+    if _last_result:
+        label, content = _last_result
+        base += (
+            f"\n\n[Most recent result — from {label}]:\n{content}\n"
+            "IMPORTANT: If the user now says to open / show / go to / pull up "
+            "'it', 'that', 'the page', 'the link', 'the chords', 'the site', "
+            "etc., they mean a URL in the result above. You MUST immediately call "
+            "navigate_browser with that exact URL. Never ask which page, never "
+            "paste the content as text, never describe what you'll do — just call "
+            "navigate_browser with the URL."
+        )
+    return base
+
+
+_REFERENTIAL_OPEN = re.compile(
+    r"\b(open|show|pull up|go to|take me to|play|launch)\b.*"
+    r"\b(it|that|this|the (page|link|site|chords|tab|video|result|article|one))\b",
+    re.IGNORECASE,
+)
+_URL_RE = re.compile(r"https?://[^\s)\"']+")
+
+
+def _referential_open(message: str):
+    """Deterministically resolve "open it / that page / the chords" to the URL
+    in the most recent result, instead of relying on the model to make the leap
+    (which it does unreliably). Returns a navigate_browser tool dict or None."""
+    if not _last_result or not _REFERENTIAL_OPEN.search(message):
+        return None
+    urls = _URL_RE.findall(_last_result[1])
+    return {"type": "tool", "name": "navigate_browser", "args": {"url": urls[0]}} if urls else None
+
+
 def chat(message: str) -> dict:
     """Single-shot chat — used for simple queries and tool result interpretation.
 
@@ -123,12 +170,17 @@ def chat(message: str) -> dict:
     tool_call or returns plain text. No more JSON-in-text parsing.
     """
     global history
+
+    # Deterministic "open it / that page / the chords" -> last result's URL,
+    # before involving the model (which resolves these unreliably).
+    ref = _referential_open(message)
+    if ref:
+        return ref
+
     history.append({"role": "user", "content": message})
     trimmed = history[-MAX_HISTORY:]
 
-    messages = [
-        {"role": "system", "content": get_personality(native_tools=True)}
-    ] + trimmed
+    messages = [{"role": "system", "content": _system_context()}] + trimmed
     res = _call_brain(messages)
 
     if res["tool"]:

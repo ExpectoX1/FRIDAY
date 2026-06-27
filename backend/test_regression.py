@@ -46,6 +46,15 @@ TOOL_CASES = [
 ]
 
 
+# (last-result content, follow-up utterance, expected tool) — reference resolution
+CONTINUITY_CASES = [
+    ("STAY chords (URL: https://tabs.ultimate-guitar.com/tab/the-kid-laroi/stay-3421793)",
+     "open the chords for me", "navigate_browser"),
+    ("BBC Sport (URL: https://www.bbc.com/sport/football)", "open that page", "navigate_browser"),
+    ("Markaroni video (URL: https://www.youtube.com/watch?v=abc123)", "play it", "navigate_browser"),
+]
+
+
 def run():
     fails = []
 
@@ -67,7 +76,19 @@ def run():
             fails.append(utt)
         print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
 
-    total = len(ROUTING_CASES) + len(TOOL_CASES)
+    print("\nCONTINUITY (refer back to last result):")
+    for ctx, utt, exp in CONTINUITY_CASES:
+        llm.set_last_result("search_web", ctx)
+        llm.history = []
+        r = chat(utt)
+        got = r.get("name") if r.get("type") == "tool" else "reply"
+        ok = got == exp
+        if not ok:
+            fails.append(utt)
+        print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
+    llm.set_last_result("", "")  # reset
+
+    total = len(ROUTING_CASES) + len(TOOL_CASES) + len(CONTINUITY_CASES)
     print(f"\n{total - len(fails)}/{total} passed")
     if fails:
         print("FAILED:", *[f'\n  - {u}' for u in fails])

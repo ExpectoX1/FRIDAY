@@ -259,6 +259,11 @@ async def handle_response(response: dict):
 
         log_result("tool", result)
 
+        # Remember this result so the next turn can resolve "open it / that page /
+        # the chords" against it (single-shot otherwise forgets tool output).
+        from brain.llm import set_last_result
+        set_last_result(name, result)
+
         if isinstance(result, str) and result.startswith("NEEDS_CONFIRMATION:"):
             command = result.replace("NEEDS_CONFIRMATION:", "").strip()
             text_queue.put(

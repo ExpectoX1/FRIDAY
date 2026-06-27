@@ -100,6 +100,9 @@ def handle_manual_single_shot(response: dict, llm_latency: float):
 
         log_result("tool", result)
 
+        from brain.llm import set_last_result
+        set_last_result(name, result)
+
         if isinstance(result, str) and result.startswith("NEEDS_CONFIRMATION:"):
             command = result.replace("NEEDS_CONFIRMATION:", "").strip()
             print(f"🔒 [CONFIRMATION REQUIRED] {command}")
