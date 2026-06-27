@@ -87,26 +87,31 @@ def _call_brain(messages: list) -> dict:
     """Run one brain turn on the active backend. Returns a normalized dict:
     {"content": str, "tool": (name, args_dict) | None}."""
     if BACKEND == "cloud":
-        try:
-            r = _groq().chat.completions.create(
-                model=CLOUD_MODEL,
-                messages=_to_openai_messages(messages),
-                tools=get_tools_spec(),
-            )
-            m = r.choices[0].message
-            content = (m.content or "").strip()
-            if m.tool_calls:
-                fn = m.tool_calls[0].function
-                args = (
-                    json.loads(fn.arguments)
-                    if isinstance(fn.arguments, str)
-                    else (fn.arguments or {})
+        # Groq's free models intermittently return unparseable output
+        # (output_parse_failed / tool_use_failed); a retry usually recovers.
+        last_err = None
+        for attempt in range(3):
+            try:
+                r = _groq().chat.completions.create(
+                    model=CLOUD_MODEL,
+                    messages=_to_openai_messages(messages),
+                    tools=get_tools_spec(),
                 )
-                return {"content": content, "tool": (fn.name, args)}
-            return {"content": content, "tool": None}
-        except Exception as e:
-            # Don't crash the conversation on a transient cloud error.
-            return {"content": f"Sorry Sir, the cloud brain hit an error: {e}", "tool": None}
+                m = r.choices[0].message
+                content = (m.content or "").strip()
+                if m.tool_calls:
+                    fn = m.tool_calls[0].function
+                    args = (
+                        json.loads(fn.arguments)
+                        if isinstance(fn.arguments, str)
+                        else (fn.arguments or {})
+                    )
+                    return {"content": content, "tool": (fn.name, args)}
+                return {"content": content, "tool": None}
+            except Exception as e:
+                last_err = e
+                continue
+        return {"content": f"Sorry Sir, the cloud brain hit an error: {last_err}", "tool": None}
 
     response = ollama.chat(
         model=MODEL, messages=messages, tools=get_tools_spec(), keep_alive=KEEP_ALIVE

@@ -82,8 +82,14 @@ def _v_batch(reply):
     return (all(have), f"a/b/c.txt created: {sum(have)}/3")
 
 
+def _norm(s: str) -> str:
+    # Models sometimes emit Unicode hyphens (‑ – —) — normalize before matching.
+    return s.lower().replace("‑", "-").replace("–", "-").replace("—", "-")
+
+
 def _v_read(reply):
-    return ("orange-42" in reply.lower(), f"reply contains the secret: {'orange-42' in reply.lower()}")
+    ok = "orange-42" in _norm(reply)
+    return (ok, f"reply contains the secret: {ok}")
 
 
 def _v_rename(reply):
