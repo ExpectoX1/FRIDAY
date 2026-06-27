@@ -7,7 +7,9 @@ from tools.registry import get_tools_spec
 history = []
 MAX_HISTORY = 4
 
-MODEL = "gemma4:latest"  # supports native Ollama tool calling (gemma3 does not)
+# qwen2.5:7b: equal tool-selection accuracy to gemma4 but ~2.8x faster
+# (~700ms vs 2-6s typical) and half the size — benchmarked in bench_brain.py.
+MODEL = "qwen2.5:7b"
 ROUTER_MODEL = "qwen2.5:3b"  # small/fast model for SIMPLE/COMPLEX routing
 
 # Keep models resident between calls. We alternate brain (gemma4) and router
@@ -131,8 +133,10 @@ def chat(message: str) -> dict:
 
     if res["tool"]:
         name, args = res["tool"]
-        # Record the assistant's tool intent in history for continuity.
-        history.append({"role": "assistant", "content": f"[called {name}]"})
+        # Don't write a synthetic "[called X]" turn into history — the model
+        # echoes it back as a reply on the next turn. Drop the triggering user
+        # message too so history stays clean conversational text only.
+        history.pop()
         return {"type": "tool", "name": name, "args": args}
 
     history.append({"role": "assistant", "content": res["content"]})

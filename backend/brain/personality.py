@@ -157,6 +157,9 @@ Tool usage rules:
   use navigate_browser with the site's URL (e.g. https://twitter.com), NOT open_app.
   open_app only opens the browser itself, not a specific site.
 * To navigate a browser: use navigate_browser, never run_shell.
+* To SEE the screen — what's open, whether something looks right, reading
+  on-screen text, "look at my screen", "what am I looking at": use
+  look_at_screen and pass the user's question.
 * If unsure of an app's exact name: call get_running_apps first.
 * run_shell is ONLY for terminal commands — git, file operations, system info.
 * Never access .ssh, .aws, or any sensitive system paths.
