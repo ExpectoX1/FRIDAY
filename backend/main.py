@@ -9,8 +9,8 @@ import os
 import subprocess
 import sounddevice as sd
 from voice.stt import listen, transcribe, rms, _input_device, SAMPLE_RATE, BLOCK_DURATION
-from voice.tts import generate, play
-from brain.llm import chat, is_complex
+from voice.tts import generate, play, generate_stream
+from brain.llm import chat, chat_stream, is_complex
 from brain.agent import run_agent
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
@@ -245,9 +245,11 @@ def tts_generator_worker():
         if text is None:
             break
         friday_done.clear()
-        audio = generate(text)
-        if audio is not None and not interrupt_event.is_set():
-            audio_queue.put(audio)
+        for audio_chunk in generate_stream(text):
+            if interrupt_event.is_set():
+                break
+            if audio_chunk is not None:
+                audio_queue.put(audio_chunk)
         text_queue.task_done()
 
 
@@ -476,6 +478,10 @@ async def assistant_loop():
             enqueue_speech(random.choice(AGENT_ACK_PHRASES))
             from brain.llm import history as chat_history
             response = await run_agent(text, chat_history=chat_history)
+            # handle_response speaks the final reply (sentence-pipelined via
+            # enqueue_speech) AND handles needs_confirmation / tool results —
+            # the agent path was previously silent without this.
+            await handle_response(response)
             if response.get("type") == "reply":
                 chat_history.append({"role": "user", "content": text})
                 chat_history.append({
@@ -483,10 +489,36 @@ async def assistant_loop():
                     "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
                 })
         else:
-            response = await asyncio.to_thread(chat, text)
+            response = None
+            sentence_buffer = ""
 
-        log_response(response)
-        await handle_response(response)
+            def run_chat_stream():
+                nonlocal response, sentence_buffer
+                for event_type, data in chat_stream(text):
+                    if event_type == "token":
+                        sentence_buffer += data
+                        parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
+                        if len(parts) > 1:
+                            for part in parts[:-1]:
+                                if part.strip():
+                                    enqueue_speech(part.strip())
+                            sentence_buffer = parts[-1]
+                    elif event_type == "tool":
+                        name, args = data
+                        response = {"type": "tool", "name": name, "args": args}
+                    elif event_type == "reply":
+                        response = {"type": "reply", "content": data}
+
+            await asyncio.to_thread(run_chat_stream)
+
+            # Enqueue any remaining text in the buffer if it was a reply
+            if not response or response.get("type") == "reply":
+                if sentence_buffer.strip():
+                    enqueue_speech(sentence_buffer.strip())
+                log_response(response or {"type": "reply", "content": sentence_buffer})
+            else:
+                log_response(response)
+                await handle_response(response)
         asyncio.create_task(store(f"User: {text}"))
 
         await asyncio.sleep(0.01)
