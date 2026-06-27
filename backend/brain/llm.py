@@ -8,11 +8,12 @@ from tools.registry import get_tools_spec
 history = []
 MAX_HISTORY = 4
 
-# qwen2.5:7b: equal tool-selection accuracy to gemma4 but ~2.8x faster
-# (~700ms vs 2-6s typical) and half the size — benchmarked in bench_brain.py.
-# Override for A/B testing, e.g. FRIDAY_LOCAL_MODEL=gemma4:latest (gemma3 does
-# NOT support native tools, so it can't be the brain).
-MODEL = os.getenv("FRIDAY_LOCAL_MODEL", "qwen2.5:7b")
+# qwen3:14b: 8/8 tool-selection accuracy (vs qwen2.5:7b's flaky 6/8) at the same
+# ~1.2s warm latency, with stronger agentic tool discipline. MUST run with
+# thinking disabled (see think=False below) or it spends seconds reasoning
+# before every call. Benchmarked in bench_brain.py on a 24GB M4 Pro.
+# Override e.g. FRIDAY_LOCAL_MODEL=gemma4:latest (gemma3 has no native tools).
+MODEL = os.getenv("FRIDAY_LOCAL_MODEL", "qwen3:14b")
 ROUTER_MODEL = "qwen2.5:3b"  # small/fast model for SIMPLE/COMPLEX routing
 
 # Keep models resident between calls. We alternate brain (gemma4) and router
@@ -113,8 +114,11 @@ def _call_brain(messages: list) -> dict:
                 continue
         return {"content": f"Sorry Sir, the cloud brain hit an error: {last_err}", "tool": None}
 
+    # think=False keeps Qwen3 from running chain-of-thought before each tool
+    # call (which adds ~5-8s). Ignored by non-thinking models.
     response = ollama.chat(
-        model=MODEL, messages=messages, tools=get_tools_spec(), keep_alive=KEEP_ALIVE
+        model=MODEL, messages=messages, tools=get_tools_spec(),
+        keep_alive=KEEP_ALIVE, think=False,
     )
     m = response.message
     content = (m.content or "").strip()

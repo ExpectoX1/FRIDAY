@@ -10,7 +10,11 @@ import ollama
 from tools.registry import get_tools_spec
 from brain.personality import get_personality
 
-MODELS = ["gemma4:latest", "qwen2.5:7b"]
+MODELS = ["qwen3:14b", "qwen2.5:7b", "gemma4:latest"]
+# Qwen3 "thinks" (chain-of-thought) before answering by default, which adds
+# seconds per call — disable it for a snappy voice assistant. Ignored by models
+# that don't have a thinking mode (gemma4, qwen2.5).
+THINK = False
 
 # (utterance, expected) — expected is a tool name, or "reply" for plain chat.
 CASES = [
@@ -40,6 +44,7 @@ def run(model):
             messages=[{"role": "system", "content": SYS}, {"role": "user", "content": utt}],
             tools=SPEC,
             keep_alive="5m",
+            think=THINK,
         )
         dt = (time.time() - t) * 1000
         total += dt
