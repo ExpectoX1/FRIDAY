@@ -6,6 +6,7 @@ import json
 import re
 import random
 import os
+import subprocess
 import sounddevice as sd
 from voice.stt import listen, transcribe, rms, _input_device, SAMPLE_RATE, BLOCK_DURATION
 from voice.tts import generate, play
@@ -177,6 +178,25 @@ def _drain_queue(q: queue.Queue):
         pass
 
 
+def _system_output_volume() -> int:
+    """System output volume 0-100 (defaults to 50 if it can't be read)."""
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", "output volume of (get volume settings)"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return max(0, min(100, int(r.stdout.strip())))
+    except Exception:
+        return 50
+
+
+def _effective_barge_threshold() -> float:
+    """Scale the barge-in threshold by speaker volume: louder speakers bleed more
+    of FRIDAY's own voice into the mic, so the bar must rise to avoid her self-
+    interrupting. 0% volume -> base; 100% -> 3x base."""
+    return BARGE_THRESHOLD * (1 + 2 * _system_output_volume() / 100.0)
+
+
 def barge_in_monitor():
     """While FRIDAY is speaking, watch the mic and interrupt on sustained loud
     input (the user talking over her). Only runs during speech, so it never
@@ -195,13 +215,14 @@ def barge_in_monitor():
         except Exception:
             time.sleep(0.2)
             continue
+        threshold = _effective_barge_threshold()  # scaled to current volume
         loud = 0
         while is_speaking.is_set():
             try:
                 chunk, _ = stream.read(block)
             except Exception:
                 break
-            if rms(chunk.flatten()) > BARGE_THRESHOLD:
+            if rms(chunk.flatten()) > threshold:
                 loud += 1
                 if loud >= BARGE_BLOCKS:
                     log_system("main", "Barge-in — stopping playback to listen.")

@@ -171,7 +171,13 @@ def _resolve_working_dir(command: str) -> str:
 
     if projects_dir.exists():
         for project in projects_dir.iterdir():
-            if project.is_dir() and project.name.lower() in command.lower():
+            if not project.is_dir():
+                continue
+            # Only switch into a project when its PATH is referenced (e.g.
+            # "Projects/FRIDAY" or the absolute path) — NOT when the bare name
+            # merely appears in the command ("echo FRIDAY" must stay in the
+            # workspace, not cd into ~/Projects/FRIDAY).
+            if str(project) in command or f"Projects/{project.name}" in command:
                 return str(project)
 
     return WORKSPACE_DIR
