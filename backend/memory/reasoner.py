@@ -1,3 +1,4 @@
+import os
 import json
 import ollama
 from datetime import datetime
@@ -5,10 +6,10 @@ from memory.schemas import GraphDelta
 from memory.profile import get_profile_prompt
 from logger import log_system
 
-# Share the brain model (qwen2.5:7b) so only one ~5GB model stays resident.
-# Loading a second large model here evicted the brain and caused multi-second
-# reloads on the next user turn.
-MODEL = "qwen2.5:7b"
+# Share the brain model so only ONE big model stays resident. Reads the same
+# env var as the brain (brain/llm.py) — loading a different large model here
+# evicted the brain and caused multi-second reloads on the next user turn.
+MODEL = os.getenv("FRIDAY_LOCAL_MODEL", "qwen3:14b")
 
 
 def build_prompt(text: str, entities: list[str], current_state: list[dict]) -> str:
@@ -104,6 +105,7 @@ def reason(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             format=GraphDelta.model_json_schema(),
+            think=False,  # qwen3: skip chain-of-thought for the structured extract
         )
         raw = response.message.content
         delta = GraphDelta.model_validate_json(raw)
