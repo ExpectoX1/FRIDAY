@@ -176,6 +176,14 @@ async def run_agent(
         ]
 
     # ── Agent loop ───────────────────────────────────────────────────────
+    # Track whether the most recent tool call failed, so the model can't claim
+    # the goal is done right after an error (it tried to say "Done Sir." after a
+    # crashed write_file). We push back and make it fix the failure first.
+    last_failed = bool(resume_state) and locals().get("silent_failure", False)
+    last_error = ""
+    completion_pushbacks = 0
+    MAX_COMPLETION_PUSHBACKS = 3
+
     for iteration in range(1, MAX_ITERATIONS + 1):
         log_system("agent", f"Iteration {iteration}/{MAX_ITERATIONS}")
 
@@ -186,6 +194,21 @@ async def run_agent(
             log_system("agent", f"Thought: {thought}")
 
         if response.get("type") == "reply":
+            # Don't accept completion if the last step failed — the goal isn't
+            # actually done. Push back and make the model fix it.
+            if last_failed and completion_pushbacks < MAX_COMPLETION_PUSHBACKS:
+                completion_pushbacks += 1
+                log_system("agent", "Reply after a failed step — pushing back.")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"The previous step FAILED: {last_error[:300]}. The goal is "
+                        "NOT complete — do not say you are done. Fix the cause "
+                        "(e.g. provide ALL required tool arguments) and continue "
+                        "by calling the appropriate tool now."
+                    ),
+                })
+                continue
             log_system("agent", "Goal complete.")
             return {"type": "reply", "content": response.get("content") or "Done Sir."}
 
@@ -252,6 +275,9 @@ async def run_agent(
                 "blocked",
             ]
         )
+
+        last_failed = is_error
+        last_error = str(tool_result) if is_error else ""
 
         if is_error:
             retry_counts[tool_name] = retry_counts.get(tool_name, 0) + 1
