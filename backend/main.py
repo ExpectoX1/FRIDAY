@@ -135,14 +135,33 @@ def _split_sentences(text: str) -> list[str]:
     return chunks
 
 
+# What FRIDAY most recently spoke — used to discard mic input that is just her
+# own voice bleeding back (e.g. when approval comes from the menu button while
+# the voice loop is mid-listen and captures her reply).
+_last_spoken = ""
+
+
 def enqueue_speech(text: str):
     """Queue a reply for TTS sentence-by-sentence. The generator/player workers
     pipeline these, so FRIDAY starts speaking the first sentence while later
     ones are still being synthesized — lower time-to-first-audio on long replies."""
+    global _last_spoken
     if not text:
         return
+    _last_spoken = str(text)
     for chunk in _split_sentences(str(text)):
         text_queue.put(chunk)
+
+
+def _is_self_echo(heard: str) -> bool:
+    """True if the transcription is mostly FRIDAY's own last reply echoing back."""
+    if not _last_spoken:
+        return False
+    hw = set(heard.lower().split())
+    if len(hw) < 4:
+        return False  # short commands are never treated as echo
+    sw = set(_last_spoken.lower().split())
+    return len(hw & sw) / len(hw) > 0.6
 
 
 # =========================================================
@@ -401,6 +420,10 @@ async def assistant_loop():
         text = await asyncio.to_thread(transcribe, audio)
 
         if not text.strip() or len(text.strip()) < 3:
+            continue
+
+        if _is_self_echo(text):
+            log_system("main", "Ignored self-echo (heard my own voice).")
             continue
 
         print(f"You: {text}")
