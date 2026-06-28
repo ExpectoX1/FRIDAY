@@ -732,11 +732,13 @@ async def assistant_loop():
             else:
                 response = None
                 sentence_buffer = ""
+                full_reply = ""
 
                 def run_chat_stream():
-                    nonlocal response, sentence_buffer
+                    nonlocal response, sentence_buffer, full_reply
                     for event_type, data in chat_stream(text):
                         if event_type == "token":
+                            full_reply += data
                             sentence_buffer += data
                             parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
                             if len(parts) > 1:
@@ -756,10 +758,12 @@ async def assistant_loop():
                 if not response or response.get("type") == "reply":
                     if sentence_buffer.strip():
                         enqueue_speech(sentence_buffer.strip())
-                    log_response(response or {"type": "reply", "content": sentence_buffer})
-                    content = (response or {}).get("content") or sentence_buffer
+                    content = (response or {}).get("content") or full_reply
+                    log_response(response or {"type": "reply", "content": content})
                     if content.strip():
                         status("FRIDAY", content.strip())
+                        # Voice already streamed; just publish the bubble for the window.
+                        state_bus.publish_activity("assistant_message", content.strip())
                 else:
                     log_response(response)
                     await handle_response(response)

@@ -78,6 +78,24 @@ _QUESTION_STARTS = ("how", "why", "what", "where", "which", "who", "is ", "are "
                     "explain", "tell me", "walk me", "show me", "describe", "is it")
 
 
+_STOPWORDS = {"what", "does", "this", "that", "code", "file", "function", "work",
+              "works", "with", "from", "into", "your", "have", "here", "there",
+              "when", "where", "which", "explain", "about", "they", "them", "main"}
+
+
+def _mentions_symbol(text: str) -> bool:
+    """True if the question names an identifier that appears in the read code
+    (e.g. 'simpleConnectionPool', 'rate_limit') — a strong follow-up signal."""
+    ctx = "".join(_files.values()).lower()
+    if not ctx:
+        return False
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]+", text):
+        low = tok.lower()
+        if len(low) >= 5 and low not in _STOPWORDS and low in ctx:
+            return True
+    return False
+
+
 def is_followup(text: str) -> bool:
     """True if this is a question ABOUT the code already in the working set
     (so answer from it), not a request to go find/open something new."""
@@ -91,7 +109,7 @@ def is_followup(text: str) -> bool:
         return False
     refers_back = any(f" {r} " in f" {t} " for r in _REFERS_BACK)
     codey = any(k in t for k in _CODE_TERMS)
-    return refers_back or codey
+    return refers_back or codey or _mentions_symbol(text)
 
 
 # ── depth → cloud routing ────────────────────────────────────────────────────
