@@ -1,10 +1,23 @@
 import sounddevice as sd
 import numpy as np
-from kokoro import KPipeline
 import os
+import warnings
+import logging
 import math
 import threading
 import re
+
+if os.getenv("FRIDAY_DEBUG", "0") != "1":
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+    warnings.filterwarnings("ignore", message="Defaulting repo_id to hexgrad/Kokoro-82M.*")
+    warnings.filterwarnings("ignore", message="dropout option adds dropout.*")
+    warnings.filterwarnings("ignore", message="`torch.nn.utils.weight_norm` is deprecated.*")
+    warnings.filterwarnings("ignore", message="The `resume_download` argument is deprecated.*")
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+
+from kokoro import KPipeline
 
 try:
     from scipy.signal import resample_poly
@@ -18,19 +31,30 @@ TTS_SPEED = float(os.getenv("FRIDAY_TTS_SPEED", "1.0"))
 TTS_PEAK = float(os.getenv("FRIDAY_TTS_PEAK", "0.86"))
 TTS_FADE_MS = int(os.getenv("FRIDAY_TTS_FADE_MS", "14"))
 TTS_OUTPUT_RATE = os.getenv("FRIDAY_TTS_OUTPUT_RATE")
+DEBUG_AUDIO = os.getenv("FRIDAY_AUDIO_DEBUG", "0") == "1"
 
 _stream_lock = threading.Lock()
 _output_stream = None
 _output_stream_rate = None
 
 def clean_for_tts(text: str) -> str:
-    text = text.replace("*", "")
-    text = text.replace("#", "")
+    # Strip markdown structure so it isn't read aloud as literal syntax. The
+    # model is told to avoid markdown, but reviews/explanations still slip into
+    # headings/bullets/code — this is the safety net so speech stays clean prose.
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)  # [label](url) -> label
+    text = text.replace("```", " ").replace("`", "")       # code fences / inline code
+    cleaned_lines = []
+    for line in text.split("\n"):
+        line = re.sub(r'^\s*#{1,6}\s*', '', line)            # ## headings
+        line = re.sub(r'^\s*([-*+]|\d+[.)])\s+', '', line)   # -, *, 1. bullets/numbers
+        cleaned_lines.append(line.strip())
+    text = " ".join(l for l in cleaned_lines if l)
+    text = text.replace("*", "").replace("#", "")
     text = text.replace("...", ", ")
-    text = text.replace("\n", " ")
+    text = re.sub(r'[^\x00-\x7F]+', '', text)                # drop non-ASCII (emoji, etc.)
+    text = re.sub(r'\s+', ' ', text)
     if text.endswith(":"):
         text = text[:-1]
-    text = re.sub(r'[^\x00-\x7F]+', '', text)
     return text.strip()
 
 def _output_sample_rate() -> int:
@@ -154,7 +178,7 @@ def play(audio: np.ndarray):
         stream = _get_output_stream(output_rate)
         try:
             underflowed = stream.write(audio.reshape(-1, 1))
-            if underflowed:
+            if underflowed and DEBUG_AUDIO:
                 print("[TTS] Output underflow detected; consider FRIDAY_TTS_OUTPUT_RATE or lowering LLM load.")
         except Exception:
             # If sd.stop() or a device change invalidated the stream, recreate it.

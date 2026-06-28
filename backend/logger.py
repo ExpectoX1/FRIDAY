@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -56,6 +57,7 @@ ERROR_LOG_FILE = ERROR_LOG_DIR / f"errors_{DATE}.log"
 
 logger = logging.getLogger("FRIDAY")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 
 formatter = logging.Formatter(
     f"%(asctime)s | {SESSION_ID} | %(levelname)s | %(message)s"
@@ -72,12 +74,16 @@ error_handler = logging.FileHandler(ERROR_LOG_FILE)
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(formatter)
 
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-
 logger.addHandler(convo_handler)
 logger.addHandler(error_handler)
-logger.addHandler(console_handler)
+
+DEBUG_CONSOLE = os.getenv("FRIDAY_DEBUG", "0") == "1"
+STATUS_CONSOLE = os.getenv("FRIDAY_STATUS", "1") == "1"
+
+if DEBUG_CONSOLE:
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 # =========================================================
 # LOG HELPERS
@@ -115,3 +121,15 @@ def log_error(error: str):
 def log_system(system: str, msg: str):
     label = get_system_name(system)
     logger.info(f"[{label}] {msg}")
+
+
+def status(label: str, msg: str = ""):
+    """Small user-facing terminal status.
+
+    Full structured logs still go to ~/FRIDAY/logs. By default the terminal only
+    gets these concise progress lines; set FRIDAY_DEBUG=1 for the full log firehose.
+    """
+    if not STATUS_CONSOLE:
+        return
+    text = f"{label}: {msg}" if msg else label
+    print(text, flush=True)
