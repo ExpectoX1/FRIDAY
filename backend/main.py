@@ -54,6 +54,26 @@ AGENT_ACK_PHRASES = [
     "Right away, Sir.",
 ]
 
+# Quiet latency fillers. These are not answers; they are short, human-feeling
+# cues used only when the model/tool path is taking long enough that silence
+# would feel awkward.
+THINKING_CUES = os.getenv("FRIDAY_THINKING_CUES", "1") == "1"
+THINKING_CUE_FIRST_SEC = float(os.getenv("FRIDAY_THINKING_CUE_FIRST_SEC", "1.6"))
+THINKING_CUE_SECOND_SEC = float(os.getenv("FRIDAY_THINKING_CUE_SECOND_SEC", "6.0"))
+THINKING_CUE_PHRASES = [
+    "Let me think.",
+    "One moment.",
+    "I'm checking.",
+    "Let me see.",
+    "I'm on it.",
+]
+THINKING_CUE_FOLLOWUPS = [
+    "Still working on it.",
+    "Almost there.",
+    "I'm checking a little deeper.",
+    "This may take a moment.",
+]
+
 # Pending confirmation state — Option B proper implementation
 pending_confirmation: dict = {
     "active": False,
@@ -158,6 +178,34 @@ def enqueue_speech(text: str):
     state_bus.set_state(replyPreview=str(text)[:200])
     for chunk in _split_sentences(str(text)):
         text_queue.put(chunk)
+
+
+async def _thinking_cues(done: asyncio.Event, first_delay: float | None = None):
+    """Speak at most two tiny cues while a turn is still processing.
+
+    The cue is skipped if FRIDAY has already started speaking or TTS is queued,
+    so it fills dead air without stepping on the real answer.
+    """
+    if not THINKING_CUES:
+        return
+
+    first = THINKING_CUE_FIRST_SEC if first_delay is None else first_delay
+    schedule = [
+        (first, THINKING_CUE_PHRASES),
+        (THINKING_CUE_SECOND_SEC, THINKING_CUE_FOLLOWUPS),
+    ]
+
+    for delay, phrases in schedule:
+        try:
+            await asyncio.wait_for(done.wait(), timeout=delay)
+            return
+        except asyncio.TimeoutError:
+            pass
+        if done.is_set():
+            return
+        if is_speaking.is_set() or not text_queue.empty() or not audio_queue.empty():
+            continue
+        enqueue_speech(random.choice(phrases))
 
 
 def speak_proactive(text: str):
@@ -516,55 +564,63 @@ async def assistant_loop():
                 pending_confirmation = {"active": False, "state": None}
 
         # ── Normal routing ────────────────────────────────────────────
-        if is_complex(text):
-            log_system("main", "Routing to agent loop.")
-            # Immediate audible ack so the user isn't met with silence while the
-            # multi-step loop runs (several seconds of inference). Plays while
-            # run_agent works.
-            enqueue_speech(random.choice(AGENT_ACK_PHRASES))
-            from brain.llm import history as chat_history
-            response = await run_agent(text, chat_history=chat_history)
-            # handle_response speaks the final reply (sentence-pipelined via
-            # enqueue_speech) AND handles needs_confirmation / tool results —
-            # the agent path was previously silent without this.
-            await handle_response(response)
-            if response.get("type") == "reply":
-                chat_history.append({"role": "user", "content": text})
-                chat_history.append({
-                    "role": "assistant",
-                    "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
-                })
-        else:
-            response = None
-            sentence_buffer = ""
-
-            def run_chat_stream():
-                nonlocal response, sentence_buffer
-                for event_type, data in chat_stream(text):
-                    if event_type == "token":
-                        sentence_buffer += data
-                        parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
-                        if len(parts) > 1:
-                            for part in parts[:-1]:
-                                if part.strip():
-                                    enqueue_speech(part.strip())
-                            sentence_buffer = parts[-1]
-                    elif event_type == "tool":
-                        name, args = data
-                        response = {"type": "tool", "name": name, "args": args}
-                    elif event_type == "reply":
-                        response = {"type": "reply", "content": data}
-
-            await asyncio.to_thread(run_chat_stream)
-
-            # Enqueue any remaining text in the buffer if it was a reply
-            if not response or response.get("type") == "reply":
-                if sentence_buffer.strip():
-                    enqueue_speech(sentence_buffer.strip())
-                log_response(response or {"type": "reply", "content": sentence_buffer})
-            else:
-                log_response(response)
+        turn_done = asyncio.Event()
+        cue_task = asyncio.create_task(_thinking_cues(turn_done))
+        try:
+            complex_request = await asyncio.to_thread(is_complex, text)
+            if complex_request:
+                log_system("main", "Routing to agent loop.")
+                # Immediate audible ack so the user isn't met with silence while the
+                # multi-step loop runs. If a latency cue already spoke, don't stack
+                # another short acknowledgement on top of it.
+                if not is_speaking.is_set() and text_queue.empty() and audio_queue.empty():
+                    enqueue_speech(random.choice(AGENT_ACK_PHRASES))
+                from brain.llm import history as chat_history
+                response = await run_agent(text, chat_history=chat_history)
+                # handle_response speaks the final reply (sentence-pipelined via
+                # enqueue_speech) AND handles needs_confirmation / tool results —
+                # the agent path was previously silent without this.
                 await handle_response(response)
+                if response.get("type") == "reply":
+                    chat_history.append({"role": "user", "content": text})
+                    chat_history.append({
+                        "role": "assistant",
+                        "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
+                    })
+            else:
+                response = None
+                sentence_buffer = ""
+
+                def run_chat_stream():
+                    nonlocal response, sentence_buffer
+                    for event_type, data in chat_stream(text):
+                        if event_type == "token":
+                            sentence_buffer += data
+                            parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
+                            if len(parts) > 1:
+                                for part in parts[:-1]:
+                                    if part.strip():
+                                        enqueue_speech(part.strip())
+                                sentence_buffer = parts[-1]
+                        elif event_type == "tool":
+                            name, args = data
+                            response = {"type": "tool", "name": name, "args": args}
+                        elif event_type == "reply":
+                            response = {"type": "reply", "content": data}
+
+                await asyncio.to_thread(run_chat_stream)
+
+                # Enqueue any remaining text in the buffer if it was a reply
+                if not response or response.get("type") == "reply":
+                    if sentence_buffer.strip():
+                        enqueue_speech(sentence_buffer.strip())
+                    log_response(response or {"type": "reply", "content": sentence_buffer})
+                else:
+                    log_response(response)
+                    await handle_response(response)
+        finally:
+            turn_done.set()
+            cue_task.cancel()
         asyncio.create_task(store(f"User: {text}"))
 
         await asyncio.sleep(0.01)
