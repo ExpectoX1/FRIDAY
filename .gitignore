@@ -48,3 +48,9 @@ FRIDAY/workspace/
 
 # pyproject
 uv.lock
+
+# SwiftPM
+.build/
+.swiftpm/
+frontend/FridayIsland/.build/
+frontend/FridayIsland/.swiftpm/

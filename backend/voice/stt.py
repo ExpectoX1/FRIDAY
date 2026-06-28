@@ -5,12 +5,19 @@ import os
 from collections import deque
 
 SAMPLE_RATE = 16000
-BLOCK_DURATION = 0.25
-SILENCE_THRESHOLD = 0.012
-MAX_SILENCE_SECONDS = 1.1  # don't cut off on a mid-sentence pause
+BLOCK_DURATION = float(os.getenv("FRIDAY_STT_BLOCK_DURATION", "0.10"))
+SILENCE_THRESHOLD = float(os.getenv("FRIDAY_STT_THRESHOLD", "0.010"))
+MAX_SILENCE_SECONDS = float(os.getenv("FRIDAY_STT_MAX_SILENCE", "1.35"))  # don't cut off on a mid-sentence pause
+CALIBRATION_SECONDS = float(os.getenv("FRIDAY_STT_CALIBRATION_SECONDS", "0.45"))
+THRESHOLD_MULTIPLIER = float(os.getenv("FRIDAY_STT_THRESHOLD_MULTIPLIER", "3.0"))
+MIN_RECORD_SECONDS = float(os.getenv("FRIDAY_STT_MIN_RECORD_SECONDS", "0.45"))
 # Keep a short rolling buffer of audio from *before* speech is detected, so the
 # quiet onset of the first word isn't clipped (a big cause of misheard input).
-PRE_ROLL_BLOCKS = 3  # ~0.75s lead-in
+PRE_ROLL_SECONDS = float(os.getenv("FRIDAY_STT_PRE_ROLL_SECONDS", "0.65"))
+PRE_ROLL_BLOCKS = max(1, int(PRE_ROLL_SECONDS / BLOCK_DURATION))
+WHISPER_VAD = os.getenv("FRIDAY_WHISPER_VAD", "1") == "1"
+WHISPER_VAD_SILENCE_MS = int(os.getenv("FRIDAY_WHISPER_VAD_SILENCE_MS", "420"))
+DEBUG_AUDIO = os.getenv("FRIDAY_AUDIO_DEBUG", "0") == "1"
 
 
 def _input_device():
@@ -30,7 +37,34 @@ STT_MODEL = os.getenv("FRIDAY_STT_MODEL", "systran/faster-distil-whisper-small.e
 model = WhisperModel(STT_MODEL, device="auto", compute_type="int8")
 
 def rms(chunk):
-    return np.sqrt(np.mean(np.square(chunk)))
+    return float(np.sqrt(np.mean(np.square(chunk))))
+
+
+def _adaptive_threshold(stream, block_size: int) -> tuple[float, deque]:
+    """Measure ambient mic level and return a per-listen speech threshold.
+
+    Fixed thresholds miss soft speech on quiet mics and trigger too eagerly on
+    noisy ones. A short calibration gives each listen a local noise floor while
+    preserving SILENCE_THRESHOLD as the minimum sensitivity floor.
+    """
+    samples = []
+    pre_roll = deque(maxlen=PRE_ROLL_BLOCKS)
+    blocks = max(1, int(CALIBRATION_SECONDS / BLOCK_DURATION))
+    for _ in range(blocks):
+        chunk, _ = stream.read(block_size)
+        chunk = chunk.flatten()
+        pre_roll.append(chunk)
+        samples.append(rms(chunk))
+
+    noise_floor = float(np.median(samples)) if samples else 0.0
+    threshold = max(SILENCE_THRESHOLD, noise_floor * THRESHOLD_MULTIPLIER)
+    # Prevent an accidental loud calibration sample from making FRIDAY deaf.
+    threshold = min(threshold, 0.045)
+
+    if DEBUG_AUDIO:
+        print(f"[STT] noise={noise_floor:.5f} threshold={threshold:.5f}")
+
+    return threshold, pre_roll
 
 def listen(should_abort=None):
     """Record until the user stops speaking. If should_abort() becomes true
@@ -39,19 +73,20 @@ def listen(should_abort=None):
     print("\nListening...")
     recording = []
     silence_time = 0
+    speech_time = 0
     started = False
+    block_size = int(SAMPLE_RATE * BLOCK_DURATION)
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
         dtype="float32",
-        blocksize=int(SAMPLE_RATE * BLOCK_DURATION),
+        blocksize=block_size,
         device=_input_device(),
     )
 
     stream.start()
-
-    pre_roll = deque(maxlen=PRE_ROLL_BLOCKS)
+    threshold, pre_roll = _adaptive_threshold(stream, block_size)
 
     while True:
         if should_abort is not None and should_abort():
@@ -59,23 +94,25 @@ def listen(should_abort=None):
             stream.close()
             return np.array([], dtype=np.float32)
 
-        chunk, _ = stream.read(int(SAMPLE_RATE * BLOCK_DURATION))
+        chunk, _ = stream.read(block_size)
         chunk = chunk.flatten()
         volume = rms(chunk)
 
         if not started:
             pre_roll.append(chunk)
-            if volume > SILENCE_THRESHOLD:
+            if volume > threshold:
                 started = True
                 silence_time = 0
+                speech_time = BLOCK_DURATION
                 recording.extend(pre_roll)  # include the lead-in audio
         else:
             recording.append(chunk)
-            if volume > SILENCE_THRESHOLD:
+            if volume > threshold:
                 silence_time = 0
+                speech_time += BLOCK_DURATION
             else:
                 silence_time += BLOCK_DURATION
-                if silence_time >= MAX_SILENCE_SECONDS:
+                if silence_time >= MAX_SILENCE_SECONDS and speech_time >= MIN_RECORD_SECONDS:
                     break
 
     stream.stop()
@@ -90,13 +127,20 @@ def listen(should_abort=None):
 def transcribe(audio):
     if len(audio) == 0:
         return ""
-    segments, _ = model.transcribe(
+    segments, info = model.transcribe(
         audio,
         language="en",
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 180}
+        beam_size=5,
+        vad_filter=WHISPER_VAD,
+        vad_parameters={
+            "min_silence_duration_ms": WHISPER_VAD_SILENCE_MS,
+            "speech_pad_ms": 320,
+        } if WHISPER_VAD else None,
     )
     text = ""
     for seg in segments:
         text += seg.text + " "
+    if DEBUG_AUDIO:
+        duration = len(audio) / SAMPLE_RATE
+        print(f"[STT] duration={duration:.2f}s lang={getattr(info, 'language', '?')} text={text.strip()!r}")
     return text.strip()
