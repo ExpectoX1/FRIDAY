@@ -10,6 +10,7 @@ from tools.mac_core import get_running_apps, take_screenshot
 from tools.vision import look_at_screen
 from tools.reminders import set_reminder, set_timer, list_reminders, cancel_reminder
 from tools.monitor import set_monitor
+from tools.projects import find_project, read_project_file
 from memory.retrieve import search_memory
 
 
@@ -82,6 +83,16 @@ TOOLS: dict[str, Tool] = {
         "description": "Read the contents of a file at the given absolute path.",
         "args": ["path"],
         "function": read_file,
+    },
+    "find_project": {
+        "description": "Resolve a project the user named (e.g. 'teenyurl', possibly misheard like 'teeny url') to its REAL folder path under ~/Projects. ALWAYS call this first when the user references one of their projects, before reading files or running git — it returns the actual path so you never guess it.",
+        "args": ["project"],
+        "function": find_project,
+    },
+    "read_project_file": {
+        "description": "Read a file from one of the user's projects in ONE step (resolves the project name AND reads the file). Use this for 'what does <project>'s <file> do', 'review the code in <project>', 'explain <project>/main.py'. Pass the project name and the file (e.g. 'main.py'); leave file empty to read the project's main entry file. Returns the contents — then answer from them.",
+        "args": ["project", "filename"],
+        "function": read_project_file,
     },
     "write_file": {
         "description": "Write content to a file at the given absolute path.",
@@ -185,6 +196,8 @@ ARG_DETAILS: dict[str, dict] = {
     "label": {"type": "string", "description": "Optional name for the timer (may be empty)."},
     "which": {"type": "string", "description": "Which reminder/timer/monitor to cancel: a name, a number, or empty if only one."},
     "interval": {"type": "string", "description": "How often to check, e.g. 'every 30 minutes' or '1 hour'. Empty defaults to 30 minutes."},
+    "project": {"type": "string", "description": "The project name the user mentioned (may be misheard, e.g. 'teeny url')."},
+    "filename": {"type": "string", "description": "File to read, e.g. 'main.py'. Empty reads the project's main entry file."},
 }
 
 _TOOLS_SPEC_CACHE: Optional[list[dict]] = None
