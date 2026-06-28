@@ -99,6 +99,12 @@ KINSHIP_KEYWORDS = {
 }
 
 
+# Explicit "nothing found" signal. Returning "" let the model treat empty memory
+# as a blank canvas and fabricate (e.g. inventing projects the user doesn't have).
+# A clear sentinel tells it memory had nothing, so it admits that or uses other tools.
+NO_MEMORY = "No relevant memories found."
+
+
 def search_memory(query: str, max_triples: int = 25) -> str:
     writer = MemoryWriter()
     try:
@@ -198,10 +204,10 @@ def search_memory(query: str, max_triples: int = 25) -> str:
                 logger.info(
                     f"Memory results not relevant to query '{query}' — returning empty"
                 )
-                return ""
+                return NO_MEMORY
 
         if not rel_results and not event_results:
-            return ""
+            return NO_MEMORY
 
         lines = []
 
@@ -223,6 +229,6 @@ def search_memory(query: str, max_triples: int = 25) -> str:
 
     except Exception as e:
         logger.error(f"Memory retrieval error: {e}")
-        return ""
+        return NO_MEMORY
     finally:
         writer.close()

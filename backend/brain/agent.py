@@ -133,6 +133,11 @@ Environment:
 * Never hardcode paths — always discover them using tools or memory first.
 * All projects are located in ~/Projects/
 * To find a specific project: run_shell("ls ~/Projects") then use git -C ~/Projects/<name>
+* A project name comes from speech and may be misheard or spaced/cased differently
+  ("teeny url", "teeny oral" → "teenyurl"). ALWAYS run_shell("ls ~/Projects") first
+  and match to the CLOSEST real folder name. NEVER use the spoken name as a literal
+  path (e.g. never `ls ~/Projects/Teeny URL`) and never conclude a project is missing
+  until you've listed ~/Projects and found no close match.
 * NEVER: "cd ~/Projects/FRIDAY && git status"
 * ALWAYS: "git -C ~/Projects/FRIDAY status"
 
