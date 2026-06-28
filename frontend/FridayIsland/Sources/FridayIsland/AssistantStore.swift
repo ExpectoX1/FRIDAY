@@ -112,6 +112,10 @@ final class AssistantStore: ObservableObject {
             return
         }
 
+        if !seenActivityIDs.isEmpty {
+            return
+        }
+
         if let transcript = clean(newEvent.transcript), transcript != lastTranscript {
             append(.userMessage, transcript)
             lastTranscript = transcript

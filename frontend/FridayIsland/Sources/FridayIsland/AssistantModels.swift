@@ -107,7 +107,7 @@ struct AssistantEvent: Codable, Equatable {
     )
 }
 
-enum AssistantActivityKind: String, Identifiable {
+enum AssistantActivityKind: String, Codable, Identifiable {
     case userMessage = "user_message"
     case assistantMessage = "assistant_message"
     case status

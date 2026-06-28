@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct FridayControlWindowView: View {
     @EnvironmentObject private var store: AssistantStore
@@ -205,33 +206,232 @@ struct FridayControlWindowView: View {
 }
 
 private struct ActivityBubble: View {
+    @EnvironmentObject private var store: AssistantStore
     let item: AssistantActivity
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            icon
+        rowContent
+        .frame(maxWidth: .infinity, alignment: rowAlignment)
+    }
 
-            VStack(alignment: .leading, spacing: 4) {
+    @ViewBuilder
+    private var rowContent: some View {
+        switch item.kind {
+        case .userMessage, .assistantMessage:
+            HStack(alignment: .top, spacing: 10) {
+                if item.kind != .userMessage {
+                    icon
+                }
+
+                messageCard
+
+                if item.kind == .userMessage {
+                    icon
+                }
+            }
+
+        case .codeSnippet:
+            HStack(alignment: .top, spacing: 10) {
+                icon
+                codeCard
+            }
+
+        case .fileRead, .fileWrite:
+            HStack(alignment: .top, spacing: 10) {
+                icon
+                fileCard
+            }
+
+        case .approval:
+            HStack(alignment: .top, spacing: 10) {
+                icon
+                approvalCard
+            }
+
+        case .status, .toolCall, .error, .diff:
+            HStack(alignment: .top, spacing: 10) {
+                icon
+                stepCard
+            }
+        }
+    }
+
+    private var messageCard: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(WindowPalette.secondaryText)
+
+            Text(item.text)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(WindowPalette.primaryText)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(WindowPalette.stroke.opacity(item.kind == .assistantMessage ? 1 : 0.65), lineWidth: 1)
+        }
+        .frame(maxWidth: 440, alignment: alignment)
+    }
+
+    private var stepCard: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(WindowPalette.secondaryText)
 
                 Text(item.text)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(WindowPalette.primaryText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(item.kind == .error ? WindowPalette.error : WindowPalette.primaryText)
                     .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(WindowPalette.stroke.opacity(item.kind == .friday ? 1 : 0.65), lineWidth: 1)
+
+            Spacer(minLength: 0)
+
+            if let tool = item.tool, !tool.isEmpty {
+                Text(tool)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(WindowPalette.secondaryText)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(WindowPalette.inputBackground, in: Capsule())
             }
-            .frame(maxWidth: bubbleWidth, alignment: alignment)
         }
-        .frame(maxWidth: .infinity, alignment: rowAlignment)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(WindowPalette.inputBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(WindowPalette.stroke, lineWidth: 1)
+        }
+    }
+
+    private var fileCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: item.kind == .fileWrite ? "square.and.pencil" : "doc.text")
+                    .foregroundStyle(color)
+
+                Text(item.kind == .fileWrite ? "Wrote \(item.text)" : item.text)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(WindowPalette.primaryText)
+
+                Spacer(minLength: 0)
+            }
+
+            if let path = item.path {
+                Text(path)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(WindowPalette.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(WindowPalette.fileCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(WindowPalette.stroke, lineWidth: 1)
+        }
+    }
+
+    private var codeCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.text)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(WindowPalette.primaryText)
+
+                    HStack(spacing: 6) {
+                        if let language = item.language, !language.isEmpty {
+                            Text(language)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(WindowPalette.secondaryText)
+                        }
+
+                        if let path = item.path {
+                            Text(path)
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(WindowPalette.secondaryText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    copy(item.code ?? item.text)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(WindowPlainIconButtonStyle())
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(item.code ?? item.text)
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(WindowPalette.codeText)
+                    .textSelection(.enabled)
+                    .padding(11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(WindowPalette.codeBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(WindowPalette.stroke.opacity(0.8), lineWidth: 1)
+            }
+        }
+        .padding(12)
+        .background(WindowPalette.fileCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(WindowPalette.stroke, lineWidth: 1)
+        }
+    }
+
+    private var approvalCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Approval Needed")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(WindowPalette.primaryText)
+
+            Text(item.text)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(WindowPalette.primaryText)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button("Deny") {
+                    store.approve(false)
+                }
+                .buttonStyle(WindowButtonStyle(kind: .secondary))
+
+                Button("Approve") {
+                    store.approve(true)
+                }
+                .buttonStyle(WindowButtonStyle(kind: .primary))
+            }
+        }
+        .padding(12)
+        .background(WindowPalette.approvalCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(WindowPalette.warning.opacity(0.35), lineWidth: 1)
+        }
     }
 
     private var icon: some View {
@@ -244,10 +444,14 @@ private struct ActivityBubble: View {
 
     private var title: String {
         switch item.kind {
-        case .user: "You"
-        case .friday: "FRIDAY"
+        case .userMessage: "You"
+        case .assistantMessage: "FRIDAY"
         case .status: "Status"
-        case .tool: "Agent"
+        case .toolCall: "Agent"
+        case .fileRead: "File Read"
+        case .codeSnippet: "Code"
+        case .fileWrite: "File Write"
+        case .diff: "Diff"
         case .approval: "Approval"
         case .error: "Attention"
         }
@@ -255,10 +459,14 @@ private struct ActivityBubble: View {
 
     private var symbol: String {
         switch item.kind {
-        case .user: "person.fill"
-        case .friday: "sparkles"
+        case .userMessage: "person.fill"
+        case .assistantMessage: "sparkles"
         case .status: "waveform.path.ecg"
-        case .tool: "hammer.fill"
+        case .toolCall: "hammer.fill"
+        case .fileRead: "doc.text.fill"
+        case .codeSnippet: "chevron.left.forwardslash.chevron.right"
+        case .fileWrite: "square.and.pencil"
+        case .diff: "plusminus"
         case .approval: "checkmark.seal.fill"
         case .error: "exclamationmark.triangle.fill"
         }
@@ -266,10 +474,11 @@ private struct ActivityBubble: View {
 
     private var color: Color {
         switch item.kind {
-        case .user: WindowPalette.blue
-        case .friday: WindowPalette.rose
+        case .userMessage: WindowPalette.blue
+        case .assistantMessage: WindowPalette.rose
         case .status: WindowPalette.mutedAccent
-        case .tool: WindowPalette.amber
+        case .toolCall: WindowPalette.amber
+        case .fileRead, .codeSnippet, .fileWrite, .diff: WindowPalette.purple
         case .approval: WindowPalette.warning
         case .error: WindowPalette.error
         }
@@ -277,22 +486,23 @@ private struct ActivityBubble: View {
 
     private var background: Color {
         switch item.kind {
-        case .user: WindowPalette.userBubble
-        case .friday: WindowPalette.fridayBubble
+        case .userMessage: WindowPalette.userBubble
+        case .assistantMessage: WindowPalette.fridayBubble
         default: WindowPalette.inputBackground
         }
     }
 
     private var rowAlignment: Alignment {
-        item.kind == .user ? .trailing : .leading
+        item.kind == .userMessage ? .trailing : .leading
     }
 
     private var alignment: Alignment {
-        item.kind == .user ? .trailing : .leading
+        item.kind == .userMessage ? .trailing : .leading
     }
 
-    private var bubbleWidth: CGFloat? {
-        item.kind == .status || item.kind == .tool ? nil : 440
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
@@ -324,6 +534,19 @@ private struct WindowIconButtonStyle: ButtonStyle {
             .foregroundStyle(.white)
             .background(color.opacity(configuration.isPressed ? 0.65 : 0.95), in: Circle())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
+    }
+}
+
+private struct WindowPlainIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(WindowPalette.secondaryText)
+            .background(WindowPalette.inputBackground.opacity(configuration.isPressed ? 0.7 : 1), in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(WindowPalette.stroke, lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
 }
 
@@ -362,9 +585,13 @@ private enum WindowPalette {
     static let background = Color(red: 0.055, green: 0.058, blue: 0.066)
     static let footerBackground = Color(red: 0.075, green: 0.078, blue: 0.09)
     static let inputBackground = Color.white.opacity(0.055)
+    static let fileCard = Color.white.opacity(0.04)
+    static let approvalCard = Color(red: 0.18, green: 0.13, blue: 0.06)
+    static let codeBackground = Color.black.opacity(0.34)
     static let stroke = Color.white.opacity(0.095)
     static let primaryText = Color(red: 0.96, green: 0.94, blue: 0.95)
     static let secondaryText = Color(red: 0.67, green: 0.67, blue: 0.72)
+    static let codeText = Color(red: 0.86, green: 0.9, blue: 0.92)
     static let userBubble = Color(red: 0.08, green: 0.13, blue: 0.18)
     static let fridayBubble = Color(red: 0.15, green: 0.09, blue: 0.12)
     static let mutedAccent = Color(red: 0.48, green: 0.62, blue: 0.68)
