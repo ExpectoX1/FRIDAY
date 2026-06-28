@@ -21,6 +21,9 @@ from bridge import state_bus, server as bridge_server
 
 text_queue = queue.Queue()
 audio_queue = queue.Queue()
+# Typed commands from the island (POST /api/input). The voice loop takes the
+# next turn from here instead of the mic when something is queued.
+typed_input_queue = queue.Queue()
 is_speaking = threading.Event()
 friday_done = threading.Event()
 friday_done.set()
@@ -419,8 +422,11 @@ def _resolve_from_menubar(approve: bool):
 async def assistant_loop():
     global pending_confirmation, MAIN_LOOP
     MAIN_LOOP = asyncio.get_running_loop()
-    # Let the Island bridge resolve confirmations via the same hooks as voice/menu
-    bridge_server.configure(MAIN_LOOP, approve_pending, deny_pending)
+    # Let the Island bridge resolve confirmations via the same hooks as voice/menu,
+    # and feed typed commands into the same queue the loop reads.
+    bridge_server.configure(
+        MAIN_LOOP, approve_pending, deny_pending, submit_text=typed_input_queue.put
+    )
 
     log_system("main", "FRIDAY ONLINE")
 
@@ -452,15 +458,23 @@ async def assistant_loop():
         interrupt_event.clear()
 
         state_bus.set_state("listening", message="Listening...", tool=None, replyPreview="")
-        audio = await asyncio.to_thread(listen)
-        state_bus.set_state("transcribing", message="Transcribing...")
-        text = await asyncio.to_thread(transcribe, audio)
+        # Listen on the mic, but bail early if a typed command arrives.
+        audio = await asyncio.to_thread(listen, lambda: not typed_input_queue.empty())
+
+        typed = not typed_input_queue.empty()
+        if typed:
+            text = typed_input_queue.get()
+            log_system("main", f"Typed command: {text}")
+        else:
+            state_bus.set_state("transcribing", message="Transcribing...")
+            text = await asyncio.to_thread(transcribe, audio)
 
         if not text.strip() or len(text.strip()) < 3:
             state_bus.set_state("idle", message="")
             continue
 
-        if _is_self_echo(text):
+        # Self-echo only applies to mic input — never to typed commands.
+        if not typed and _is_self_echo(text):
             log_system("main", "Ignored self-echo (heard my own voice).")
             state_bus.set_state("idle", message="")
             continue

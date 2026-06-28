@@ -33,8 +33,10 @@ During `approval_required`: `requiresApproval=true`, `pendingCommand` = the comm
 - `GET  /api/health` → `{"status":"ok","state":"idle"}`
 - `POST /api/approval` `{"approved": true|false}` → resumes/cancels the pending
   confirmation (same hook as voice "yes/no" and the menu bar).
-- `POST /api/input` `{"text":"..."}` → **Phase 3**; returns **503** until typed-command
-  routing is wired (show a disabled/retry state on 503).
+- `POST /api/input` `{"text":"..."}` → ✅ live. Injects a typed command into the
+  same routing the voice loop uses (returns `{"ok":true}`). The loop takes the
+  next turn from typed input instead of the mic. A typed command queued while
+  FRIDAY is speaking runs once she finishes.
 
 ## Notes
 - `mood` is intentionally NOT sent — the UI derives expression/mood from `state`.

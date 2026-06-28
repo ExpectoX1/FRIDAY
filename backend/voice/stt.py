@@ -32,7 +32,10 @@ model = WhisperModel(STT_MODEL, device="auto", compute_type="int8")
 def rms(chunk):
     return np.sqrt(np.mean(np.square(chunk)))
 
-def listen():
+def listen(should_abort=None):
+    """Record until the user stops speaking. If should_abort() becomes true
+    (e.g. a typed command arrived from the island), stop early and return empty
+    audio — the caller then takes the typed input instead of transcribing."""
     print("\nListening...")
     recording = []
     silence_time = 0
@@ -51,6 +54,11 @@ def listen():
     pre_roll = deque(maxlen=PRE_ROLL_BLOCKS)
 
     while True:
+        if should_abort is not None and should_abort():
+            stream.stop()
+            stream.close()
+            return np.array([], dtype=np.float32)
+
         chunk, _ = stream.read(int(SAMPLE_RATE * BLOCK_DURATION))
         chunk = chunk.flatten()
         volume = rms(chunk)

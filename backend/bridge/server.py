@@ -51,17 +51,15 @@ async def approval(payload: dict):
 
 @app.post("/api/input")
 async def submit_input(payload: dict):
-    loop, fn = _handlers["loop"], _handlers["submit_text"]
-    if not loop or not fn:
-        # Phase 3 — typed-command routing not wired yet. Codex shows a disabled
-        # / retry state on 503.
+    fn = _handlers["submit_text"]
+    if not fn:
         return JSONResponse(
             status_code=503, content={"error": "typed input not available yet"}
         )
     text = (payload.get("text") or "").strip()
     if not text:
         return JSONResponse(status_code=400, content={"error": "empty text"})
-    asyncio.run_coroutine_threadsafe(fn(text), loop)
+    fn(text)  # thread-safe queue.put — the voice loop picks it up next turn
     return {"ok": True}
 
 
