@@ -4,12 +4,17 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AssistantStore()
     private var panelController: IslandPanelController?
+    private var controlWindowController: FridayControlWindowController?
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let panelController = IslandPanelController(store: store)
         self.panelController = panelController
         panelController.show()
+
+        let controlWindowController = FridayControlWindowController(store: store)
+        self.controlWindowController = controlWindowController
+        controlWindowController.show()
 
         configureMenuBar()
         store.start()
@@ -24,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "FRIDAY"
 
         let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Show FRIDAY Window", action: #selector(showControlWindow), keyEquivalent: "f"))
         menu.addItem(NSMenuItem(title: "Show Island", action: #selector(showIsland), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Hide Island", action: #selector(hideIsland), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Reconnect", action: #selector(reconnect), keyEquivalent: "r"))
@@ -36,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showIsland() {
         panelController?.show()
+    }
+
+    @objc private func showControlWindow() {
+        controlWindowController?.show()
     }
 
     @objc private func hideIsland() {

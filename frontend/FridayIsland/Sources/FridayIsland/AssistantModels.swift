@@ -91,6 +91,7 @@ struct AssistantEvent: Codable, Equatable {
     var requiresApproval: Bool?
     var pendingCommand: String?
     var amplitude: Double?
+    var activity: [AssistantActivity] = []
 
     static let idle = AssistantEvent(
         state: .idle,
@@ -101,8 +102,97 @@ struct AssistantEvent: Codable, Equatable {
         tool: nil,
         requiresApproval: false,
         pendingCommand: nil,
-        amplitude: nil
+        amplitude: nil,
+        activity: []
     )
+}
+
+enum AssistantActivityKind: String, Identifiable {
+    case userMessage = "user_message"
+    case assistantMessage = "assistant_message"
+    case status
+    case toolCall = "tool_call"
+    case fileRead = "file_read"
+    case codeSnippet = "code_snippet"
+    case fileWrite = "file_write"
+    case diff
+    case approval
+    case error
+
+    var id: String { rawValue }
+}
+
+struct AssistantActivity: Identifiable, Codable, Equatable {
+    var id: String
+    var date: Date
+    var kind: AssistantActivityKind
+    var text: String
+    var path: String?
+    var language: String?
+    var code: String?
+    var diff: String?
+    var tool: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case ts
+        case kind
+        case text
+        case path
+        case language
+        case code
+        case diff
+        case tool
+    }
+
+    init(
+        kind: AssistantActivityKind,
+        text: String,
+        date: Date = Date(),
+        id: String = UUID().uuidString,
+        path: String? = nil,
+        language: String? = nil,
+        code: String? = nil,
+        diff: String? = nil,
+        tool: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.text = text
+        self.date = date
+        self.path = path
+        self.language = language
+        self.code = code
+        self.diff = diff
+        self.tool = tool
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        let timestamp = try container.decodeIfPresent(Double.self, forKey: .ts)
+        date = timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
+        kind = try container.decode(AssistantActivityKind.self, forKey: .kind)
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        language = try container.decodeIfPresent(String.self, forKey: .language)
+        code = try container.decodeIfPresent(String.self, forKey: .code)
+        diff = try container.decodeIfPresent(String.self, forKey: .diff)
+        tool = try container.decodeIfPresent(String.self, forKey: .tool)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(date.timeIntervalSince1970, forKey: .ts)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(path, forKey: .path)
+        try container.encodeIfPresent(language, forKey: .language)
+        try container.encodeIfPresent(code, forKey: .code)
+        try container.encodeIfPresent(diff, forKey: .diff)
+        try container.encodeIfPresent(tool, forKey: .tool)
+    }
 }
 
 enum FaceExpression {
