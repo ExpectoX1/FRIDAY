@@ -70,7 +70,11 @@ async def ws_state(ws: WebSocket):
     queue: asyncio.Queue = asyncio.Queue()
     state_bus.subscribe(loop, queue)
     try:
-        await ws.send_json(state_bus.get_state())  # initial snapshot
+        # Initial snapshot includes the full activity log so a late-joining
+        # window catches up; subsequent messages carry only new events.
+        snapshot = state_bus.get_state()
+        snapshot["activity"] = state_bus.get_activity()
+        await ws.send_json(snapshot)
         while True:
             await ws.send_json(await queue.get())
     except WebSocketDisconnect:

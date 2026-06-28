@@ -369,6 +369,11 @@ async def run_agent(
             log_error(f"Tool {tool_name} crashed: {e}")
 
         log_result("agent", tool_result)
+        try:
+            from bridge.activity import emit_tool_activity
+            emit_tool_activity(tool_name, tool_args, tool_result)  # code/file cards to the window
+        except Exception:
+            pass
 
         # Confirmation required — pause and return state for resumption.
         if isinstance(tool_result, str) and tool_result.startswith(
