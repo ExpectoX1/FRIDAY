@@ -374,8 +374,12 @@ def agent_chat_stream(messages: list):
 COMPLEX_SIGNALS = [
     "and then", "after that", "first ", "step by step", "push", "commit", "deploy",
     "research", "find and", "open and", "search and", "write and", "create and",
+    "write a test", "write tests", "create a test", "create tests", "add tests",
+    "test file", "testing of",
     "help me", "figure out", "work out", "go to", "navigate to",
-    "open chrome and", "sort", "organize", "clean", "tidy", "rename",
+    "open chrome and", "list out", "list files", "list whatever",
+    "what's in my download", "what is in my download",
+    "whatever is in my download", "sort", "organize", "clean", "tidy", "rename",
     # Discovery intents — need a web search before acting, so they must run in
     # the agent loop (search_web -> navigate_browser), never single-shot.
     # Checked before SIMPLE_SIGNALS so "open the stream" beats the "open " pin.
@@ -393,6 +397,7 @@ SIMPLE_SIGNALS = [
     "how are you", "how are things", "how's it going", "how is it going",
     "what's up", "thank you", "thanks", "good morning", "good afternoon",
     "good evening", "good night", "tell me a joke", "who are you",
+    "what other functionality",
 ]
 
 # Proactive single tool calls (reminders, timers, monitors). Checked BEFORE

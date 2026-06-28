@@ -18,7 +18,9 @@ from logger import *
 from memory.store import store
 from memory.retrieve import search_memory
 from bridge import state_bus, server as bridge_server
+from bridge.activity import deliver_reply, emit_tool_activity
 from proactive.scheduler import scheduler
+from local_code import prepare_code_review, answer_code_review
 
 text_queue = queue.Queue()
 audio_queue = queue.Queue()
@@ -42,7 +44,11 @@ BARGE_THRESHOLD = float(os.getenv("FRIDAY_BARGE_THRESHOLD", "0.06"))
 BARGE_BLOCKS = max(2, int(0.5 / BLOCK_DURATION))  # ~0.5s sustained loud input
 interrupt_event = threading.Event()
 
-LLM_INTERPRET = {"search_memory", "search_web", "read_page"}
+LLM_INTERPRET = {"search_memory", "search_web", "read_page", "read_file", "read_project_file"}
+
+# Codex's local-code interceptor (local_code.py) is opt-in only — it over-triggered
+# and conflicts with the deterministic find_project tool path. See call site.
+LOCAL_CODE_INTERCEPT = os.getenv("FRIDAY_LOCAL_CODE", "0") == "1"
 
 # Spoken immediately when a request routes to the multi-step agent, so the user
 # hears feedback within ~1s instead of waiting out several seconds of silence.
@@ -53,6 +59,24 @@ AGENT_ACK_PHRASES = [
     "Give me a moment.",
     "Right away, Sir.",
 ]
+
+
+def _tool_status(name: str, args: dict | None = None) -> str:
+    args = args or {}
+    if name == "search_web":
+        return f"Searching: {args.get('query', '')}".strip()
+    if name == "read_page":
+        return "Reading the page"
+    if name == "search_memory":
+        return "Checking memory"
+    if name == "navigate_browser":
+        return "Opening the page"
+    if name == "run_shell":
+        command = str(args.get("command", "")).strip()
+        return f"Running: {command[:80]}" if command else "Running command"
+    if name == "play_media":
+        return "Starting playback"
+    return f"Running {name}"
 
 # Quiet latency fillers. These are not answers; they are short, human-feeling
 # cues used only when the model/tool path is taking long enough that silence
@@ -228,7 +252,10 @@ def _is_self_echo(heard: str) -> bool:
     if len(hw) < 4:
         return False  # short commands are never treated as echo
     sw = set(_last_spoken.lower().split())
-    return len(hw & sw) / len(hw) > 0.6
+    # 0.5 (was 0.6): STT garbles the echoed audio ("teenyurl" -> "Teeny Earl",
+    # "cache.py" -> "cash pie"), dropping the word overlap, so a higher bar let
+    # echoes through as fake user turns.
+    return len(hw & sw) / len(hw) > 0.5
 
 
 # =========================================================
@@ -351,7 +378,9 @@ async def handle_response(response: dict):
 
     if rtype == "reply":
         log_response(response)
-        enqueue_speech(response.get("content", ""))
+        content = response.get("content", "")
+        status("FRIDAY", content)
+        deliver_reply(content, enqueue_speech)
 
     elif rtype == "needs_confirmation":
         # Store pending state and ask user
@@ -363,6 +392,7 @@ async def handle_response(response: dict):
             "approval_required", requiresApproval=True, pendingCommand=cmd,
             message=response.get("content", "Approve?"),
         )
+        state_bus.publish_activity("approval", f"Approve: {cmd}", tool="run_shell")
         enqueue_speech(response.get("content", "Should I proceed Sir?"))
 
     elif rtype == "tool":
@@ -370,6 +400,9 @@ async def handle_response(response: dict):
         args = response.get("args", {})
 
         log_tool("tool", name, args)
+        progress = _tool_status(name, args)
+        status("Agent", progress)
+        state_bus.set_state("tool_running", tool=name, message=progress)
         tool = get_tool(name)
 
         if tool is None:
@@ -395,6 +428,7 @@ async def handle_response(response: dict):
             return
 
         log_result("tool", result)
+        emit_tool_activity(name, args, result)  # file_read/code_snippet/diff to the window
 
         # Remember this result so the next turn can resolve "open it / that page /
         # the chords" against it (single-shot otherwise forgets tool output).
@@ -416,24 +450,32 @@ async def handle_response(response: dict):
                     prompt = f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
                 elif name == "read_page":
                     prompt = f"Based on our conversation and the full text of this web page, give the user a natural, concise spoken answer to what they just asked. Lead with the key points. Do NOT ask what they want — just summarize and answer directly.\n\nPage:\n{result}"
+                else:  # read_file / read_project_file — answer about the code, never read it aloud
+                    prompt = f"Based on our conversation and this file's contents, answer the user's question / give your review. Be specific and grounded in the code. Do NOT read the code aloud.\n\n{result}"
                 follow_up = await asyncio.to_thread(chat, prompt)
-                enqueue_speech(follow_up.get("content", str(result)))
+                content = follow_up.get("content", str(result))
+                status("FRIDAY", content)
+                deliver_reply(content, enqueue_speech)
             except Exception as e:
                 log_error(f"LLM follow-up failed: {e}")
-                enqueue_speech(str(result)[:200])
+                content = str(result)[:200]
+                status("FRIDAY", content)
+                deliver_reply(content, enqueue_speech)
             return
 
         if isinstance(result, dict):
-            enqueue_speech(
-                result.get("message") or result.get("content") or "Done Sir."
-            )
+            content = result.get("message") or result.get("content") or "Done Sir."
         else:
-            enqueue_speech(result if result else "Done Sir.")
+            content = result if result else "Done Sir."
+        status("FRIDAY", str(content))
+        deliver_reply(content, enqueue_speech)
 
     else:
         log_error(response.get("content", "Unknown error"))
         state_bus.set_state("error", outcome="error", message=response.get("content", "Something went wrong"))
-        enqueue_speech(response.get("content", "Something went wrong Sir."))
+        content = response.get("content", "Something went wrong Sir.")
+        status("FRIDAY", content)
+        enqueue_speech(content)
 
 
 # =========================================================
@@ -482,6 +524,67 @@ def _resolve_from_menubar(approve: bool):
     asyncio.run_coroutine_threadsafe(coro, MAIN_LOOP)
 
 
+async def _handle_local_code_request(text: str) -> bool:
+    """Deterministic local project/code review before the general agent loop.
+
+    Returns True when it handled the turn. This prevents FRIDAY from answering
+    local-code questions from folder names, memory, web search, or git status.
+    """
+    request = await asyncio.to_thread(prepare_code_review, text)
+    if request is None:
+        return False
+
+    project_line = f"Project: {request.project.name}"
+    status("Code", project_line)
+    state_bus.set_state("thinking", message=project_line, tool=None)
+
+    if not request.files:
+        content = (
+            f"I found the project {request.project.name}, but I couldn't find a "
+            "top-level source file to review. Tell me the exact file name, Sir."
+        )
+        status("FRIDAY", content)
+        log_response({"type": "reply", "content": content})
+        enqueue_speech(content)
+        return True
+
+    for path in request.files:
+        line = f"Reading {path.name}"
+        status("Code", line)
+        state_bus.set_state("tool_running", tool="read_file", message=line)
+
+    result = await asyncio.to_thread(answer_code_review, request)
+    if result.files:
+        files = ", ".join(path.name for path in result.files)
+        state_bus.set_state("thinking", message=f"Reviewed {files}", tool=None)
+
+    status("FRIDAY", result.answer)
+    log_response({"type": "reply", "content": result.answer})
+    enqueue_speech(result.answer)
+
+    from brain.llm import history as chat_history
+    chat_history.append({"role": "user", "content": text})
+    if result.files:
+        chat_history.append({
+            "role": "assistant",
+            "content": json.dumps({
+                "type": "local_code_context",
+                "project": str(result.project),
+                "files": [str(path) for path in result.files],
+                "instruction": (
+                    "For follow-up code edits, tests, or file questions, use this "
+                    "project path and these files as the current local code context."
+                ),
+            }),
+        })
+    chat_history.append({
+        "role": "assistant",
+        "content": json.dumps({"type": "reply", "content": result.answer}),
+    })
+    asyncio.create_task(store(f"User: {text}"))
+    return True
+
+
 async def assistant_loop():
     global pending_confirmation, MAIN_LOOP
     MAIN_LOOP = asyncio.get_running_loop()
@@ -492,6 +595,7 @@ async def assistant_loop():
     )
 
     log_system("main", "FRIDAY ONLINE")
+    status("FRIDAY", "Starting up")
 
     startup_audio = generate("Starting systems Sir, getting everything online.")
     if startup_audio is not None:
@@ -506,6 +610,7 @@ async def assistant_loop():
         asyncio.to_thread(search_memory, "warm up"),
     )
     log_system("main", "Models warmed (brain, router, memory).")
+    status("FRIDAY", "Models ready")
 
     ready_audio = generate("All systems online Sir, ready when you are.")
     if ready_audio is not None:
@@ -514,15 +619,23 @@ async def assistant_loop():
     await asyncio.sleep(2)
 
     while True:
-        while not friday_done.is_set():
+        # Wait until she is fully done speaking — NOT just friday_done, which
+        # toggles on in the gaps between sentences of a multi-sentence reply.
+        # Without the is_speaking guard the loop opens the mic mid-reply and
+        # records her own next sentence as a "user" turn (self-echo feedback).
+        while not friday_done.is_set() or is_speaking.is_set():
             await asyncio.sleep(0.05)
 
         # Fresh turn — clear any prior interrupt so the workers aren't gated.
         interrupt_event.clear()
 
         state_bus.set_state("listening", message="Listening...", tool=None, replyPreview="")
-        # Listen on the mic, but bail early if a typed command arrives.
-        audio = await asyncio.to_thread(listen, lambda: not typed_input_queue.empty())
+        status("Listening")
+        # Listen on the mic, but bail early if a typed command arrives OR if she
+        # starts speaking (a queued/proactive line) — never record her own voice.
+        audio = await asyncio.to_thread(
+            listen, lambda: not typed_input_queue.empty() or is_speaking.is_set()
+        )
 
         typed = not typed_input_queue.empty()
         if typed:
@@ -530,6 +643,7 @@ async def assistant_loop():
             log_system("main", f"Typed command: {text}")
         else:
             state_bus.set_state("transcribing", message="Transcribing...")
+            status("Transcribing")
             text = await asyncio.to_thread(transcribe, audio)
 
         if not text.strip() or len(text.strip()) < 3:
@@ -542,9 +656,11 @@ async def assistant_loop():
             state_bus.set_state("idle", message="")
             continue
 
-        print(f"You: {text}")
+        status("You", text)
         log_user(text)
-        state_bus.set_state("thinking", message="Thinking...", transcript=text)
+        state_bus.publish_activity("user_message", text)
+        state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+        status("Thinking", "routing request")
 
         # ── Confirmation flow ─────────────────────────────────────────
         if pending_confirmation["active"]:
@@ -567,9 +683,19 @@ async def assistant_loop():
         turn_done = asyncio.Event()
         cue_task = asyncio.create_task(_thinking_cues(turn_done))
         try:
+            # Codex's pre-agent code-review interceptor — DISABLED by default.
+            # It over-triggered (hijacked "list my Downloads" into a code review)
+            # and ran a second parallel path. The agent now resolves projects
+            # deterministically via the find_project tool instead. Re-enable for
+            # experiments with FRIDAY_LOCAL_CODE=1.
+            if LOCAL_CODE_INTERCEPT and await _handle_local_code_request(text):
+                continue
+
             complex_request = await asyncio.to_thread(is_complex, text)
             if complex_request:
                 log_system("main", "Routing to agent loop.")
+                state_bus.set_state("thinking", message="Planning steps...", transcript=text, tool=None)
+                status("Agent", "planning steps")
                 # Immediate audible ack so the user isn't met with silence while the
                 # multi-step loop runs. If a latency cue already spoke, don't stack
                 # another short acknowledgement on top of it.
@@ -615,6 +741,9 @@ async def assistant_loop():
                     if sentence_buffer.strip():
                         enqueue_speech(sentence_buffer.strip())
                     log_response(response or {"type": "reply", "content": sentence_buffer})
+                    content = (response or {}).get("content") or sentence_buffer
+                    if content.strip():
+                        status("FRIDAY", content.strip())
                 else:
                     log_response(response)
                     await handle_response(response)

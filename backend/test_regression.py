@@ -14,6 +14,7 @@ import sys
 from brain.llm import is_complex, chat
 import brain.llm as llm
 from brain.agent import _tool_failed, _announces_next_action
+from local_code import prepare_code_review
 
 # (reply text, expected _announces_next_action) — a reply that only ANNOUNCES an
 # inspection it hasn't done ("Let me take a look at main.py") must not count as
@@ -60,6 +61,8 @@ ROUTING_CASES = [
     ("i want to watch the good doctor on netflix", False),
     ("open twitter on chrome", False),  # single navigate, not multi-step
     ("commit my friday project", True),
+    ("Can you write a test file which will do the testing of these functions?", True),
+    ("Can you list out whatever is in my download folder?", True),
     ("find and play the latest yjr video", True),
     ("markaroni is live, can you open the stream", True),
     ("play the latest yjr video", True),
@@ -102,6 +105,25 @@ CONTINUITY_CASES = [
      "open the chords for me", "navigate_browser"),
     ("BBC Sport (URL: https://www.bbc.com/sport/football)", "open that page", "navigate_browser"),
     ("Markaroni video (URL: https://www.youtube.com/watch?v=abc123)", "play it", "navigate_browser"),
+]
+
+LOCAL_CODE_CASES = [
+    ("I wanted your opinion on one of my projects. It's called teeny URL.", "teenyurl", "main.py"),
+    ("Hi Friday, I want you to find out teeny URL project from my directories from my project directory", "teenyurl", "main.py"),
+    ("Find the project teeny URL from my project's directory", "teenyurl", "main.py"),
+    ("review the Teeny URL project", "teenyurl", "main.py"),
+    ("review the Teeny URR project", "teenyurl", "main.py"),
+    ("audit the teeny URL repo", "teenyurl", "main.py"),
+    ("does the teeny URL app look clean", "teenyurl", "main.py"),
+    ("check out the teeny oral project and in that check out main dot p y", "teenyurl", "main.py"),
+    ("what is the main dot p by file do in the teeny URL folder", "teenyurl", "main.py"),
+]
+
+LOCAL_CODE_NEGATIVE_CASES = [
+    "what do you think about this project idea",
+    "search the web for tiny url implementations",
+    "Can you write a test file which will do the testing of these functions?",
+    "Can you list out whatever is in my download folder?",
 ]
 
 
@@ -155,8 +177,28 @@ def run():
         print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
     llm.set_last_result("", "")  # reset
 
+    print("\nLOCAL CODE RESOLUTION:")
+    for utt, exp_project, exp_file in LOCAL_CODE_CASES:
+        request = prepare_code_review(utt)
+        got_project = request.project.name if request else None
+        got_file = request.files[0].name if request and request.files else None
+        ok = got_project == exp_project and got_file == exp_file
+        if not ok:
+            fails.append(utt)
+        print(f"  {'PASS' if ok else 'FAIL'}  {got_project}/{got_file} (want {exp_project}/{exp_file})  {utt}")
+
+    print("\nLOCAL CODE NON-MATCHES:")
+    for utt in LOCAL_CODE_NEGATIVE_CASES:
+        request = prepare_code_review(utt)
+        ok = request is None
+        if not ok:
+            fails.append(utt)
+        got = f"{request.project.name}/{request.files[0].name if request.files else '-'}" if request else "None"
+        print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want None)  {utt}")
+
     total = (len(TOOL_FAILURE_CASES) + len(NEXT_ACTION_CASES) + len(ROUTING_CASES)
-             + len(TOOL_CASES) + len(CONTINUITY_CASES))
+             + len(TOOL_CASES) + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
+             + len(LOCAL_CODE_NEGATIVE_CASES))
     print(f"\n{total - len(fails)}/{total} passed")
     if fails:
         print("FAILED:", *[f'\n  - {u}' for u in fails])
