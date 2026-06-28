@@ -13,7 +13,22 @@ possible; a case that fails consistently is a real regression.
 import sys
 from brain.llm import is_complex, chat
 import brain.llm as llm
-from brain.agent import _tool_failed
+from brain.agent import _tool_failed, _announces_next_action
+
+# (reply text, expected _announces_next_action) — a reply that only ANNOUNCES an
+# inspection it hasn't done ("Let me take a look at main.py") must not count as
+# completion; a real answer (even one ending with "let me know" / "I'll fix X")
+# must. Regression: the agent stopped after `ls`, promising to read main.py and
+# never doing it.
+NEXT_ACTION_CASES = [
+    ("I see the files. Let me take a look at the main file, main.py, to understand what it does.", True),
+    ("Let me check its contents to provide feedback.", True),
+    ("I'll read the file now.", True),
+    ("It's a URL shortener using FastAPI. It exposes /shorten and /stats. Let me know if you want more.", False),
+    ("It does three things: shorten URLs, redirect, and track clicks. The code is solid.", False),
+    ("I'll fix the rate limiting for you.", False),
+    ("Done, Sir.", False),
+]
 
 # (tool result, expected _tool_failed) — the agent must only treat a result as a
 # failure when it ANNOUNCES one, never on error-like words inside real content.
@@ -102,6 +117,14 @@ def run():
         label = (result if isinstance(result, str) else str(result))[:48]
         print(f"  {'PASS' if ok else 'FAIL'}  failed={got!s:5} (want {exp!s:5})  {label}")
 
+    print("\nANNOUNCED-NEXT-ACTION DETECTION (agent):")
+    for text, exp in NEXT_ACTION_CASES:
+        got = _announces_next_action(text)
+        ok = got == exp
+        if not ok:
+            fails.append(f"_announces_next_action({text!r:.40})")
+        print(f"  {'PASS' if ok else 'FAIL'}  announce={got!s:5} (want {exp!s:5})  {text[:46]}")
+
     print("\nROUTING (is_complex):")
     for utt, exp in ROUTING_CASES:
         got = is_complex(utt)
@@ -132,7 +155,7 @@ def run():
         print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
     llm.set_last_result("", "")  # reset
 
-    total = (len(TOOL_FAILURE_CASES) + len(ROUTING_CASES)
+    total = (len(TOOL_FAILURE_CASES) + len(NEXT_ACTION_CASES) + len(ROUTING_CASES)
              + len(TOOL_CASES) + len(CONTINUITY_CASES))
     print(f"\n{total - len(fails)}/{total} passed")
     if fails:

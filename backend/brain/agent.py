@@ -1,6 +1,7 @@
 import json
 import asyncio
 import os
+import re
 from brain.llm import agent_chat, agent_chat_stream
 from brain.personality import get_personality
 from tools.registry import get_tool
@@ -54,6 +55,30 @@ def _tool_failed(result) -> bool:
     if isinstance(result, str):
         return result.lstrip().lower().startswith(_ERROR_PREFIXES)
     return False
+
+
+# Inspection/discovery verbs that belong in a TOOL CALL, not in narrated intent.
+_NEXT_ACTION_RE = re.compile(
+    r"\b(let me|i'?ll|i will|i'?m going to|i need to|i should|let me first|let's)\b"
+    r"[^.!?]*?\b(take a look|look at|look into|check|read|open|examine|inspect|"
+    r"review|analy[sz]e|fetch|find|search|list|see what|explore|investigate|"
+    r"go through|dig into|pull up)\b",
+    re.IGNORECASE,
+)
+
+
+def _announces_next_action(text: str) -> bool:
+    """True when the reply ENDS by announcing an inspection it hasn't done yet
+    ("Let me take a look at main.py...") instead of giving the answer. That is not
+    completion — the model should call the tool rather than stop. We check only
+    the final sentence so a real answer with a trailing "let me know" closer
+    (or "I'll fix X") is not mistaken for an unfinished step."""
+    if not text:
+        return False
+    last_sentence = re.split(r"(?<=[.!?])\s+", text.strip())[-1]
+    if "let me know" in last_sentence.lower():
+        return False
+    return bool(_NEXT_ACTION_RE.search(last_sentence))
 
 
 def _tool_status(name: str, args: dict | None = None) -> str:
@@ -122,6 +147,7 @@ Rules:
 1b. Only use look_at_screen when the task is specifically about what is visually ON the screen. Do NOT use it for file, git, web, app, or media tasks.
 2. Never repeat a tool call that already succeeded. When the goal is done, reply with text — do not call another tool.
 2a. When the user asks for information (news, facts, search results), your final reply MUST summarize the key findings directly in 2-4 sentences, then STOP. State the actual facts (who/what/when). Do NOT list sources to choose from, do NOT end with "which source would you prefer" or "shall I open the page" — only offer to open something if the user explicitly asked for a link.
+2c. NEVER announce an action and then stop ("Let me take a look at main.py...", "Let me check its contents", "I'll read the file now"). If you intend to read/open/inspect/run something, CALL that tool in this SAME step. Only reply with plain text once you ACTUALLY have the answer from the tool results. Narrating intent without calling the tool is treated as not done.
 2b. When you open a page or video, pass navigate_browser a real URL taken verbatim from a tool result (e.g. https://www.skysports.com/...). NEVER pass a title or description as the url.
 3. If a tool result indicates an error, fix the cause before moving on. If a tool fails repeatedly, stop and ask for help in plain text.
 4. Refer to the user as "Sir", "Boss", or "the user" — never by name.
@@ -278,8 +304,27 @@ async def run_agent(
                     ),
                 })
                 continue
+
+            # The model only ANNOUNCED a next step ("Let me take a look at
+            # main.py...") without calling the tool — that's not done. Push it to
+            # actually act instead of completing on an empty promise.
+            content = response.get("content") or ""
+            if (_announces_next_action(content)
+                    and completion_pushbacks < MAX_COMPLETION_PUSHBACKS):
+                completion_pushbacks += 1
+                log_system("agent", "Reply only announced a next action — pushing to act.")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You said you would do that but did not actually call a tool. "
+                        "Do NOT narrate intent and stop. Call the tool now (e.g. "
+                        "read_file / run_shell) to perform that step, then answer."
+                    ),
+                })
+                continue
+
             log_system("agent", "Goal complete.")
-            return {"type": "reply", "content": response.get("content") or "Done Sir."}
+            return {"type": "reply", "content": content or "Done Sir."}
 
         tool_name = response.get("name")
         tool_args = response.get("args", {})
