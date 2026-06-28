@@ -42,7 +42,7 @@ BARGE_THRESHOLD = float(os.getenv("FRIDAY_BARGE_THRESHOLD", "0.06"))
 BARGE_BLOCKS = max(2, int(0.5 / BLOCK_DURATION))  # ~0.5s sustained loud input
 interrupt_event = threading.Event()
 
-LLM_INTERPRET = {"search_memory", "search_web"}
+LLM_INTERPRET = {"search_memory", "search_web", "read_page"}
 
 # Spoken immediately when a request routes to the multi-step agent, so the user
 # hears feedback within ~1s instead of waiting out several seconds of silence.
@@ -366,6 +366,8 @@ async def handle_response(response: dict):
                     prompt = f"Based on our conversation and this memory context, give a natural, concise spoken answer to what the user just asked. Do NOT ask what they want — just answer directly.\n\nMemory:\n{result}"
                 elif name == "search_web":
                     prompt = f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
+                elif name == "read_page":
+                    prompt = f"Based on our conversation and the full text of this web page, give the user a natural, concise spoken answer to what they just asked. Lead with the key points. Do NOT ask what they want — just summarize and answer directly.\n\nPage:\n{result}"
                 follow_up = await asyncio.to_thread(chat, prompt)
                 enqueue_speech(follow_up.get("content", str(result)))
             except Exception as e:

@@ -55,6 +55,7 @@ TOOL_CASES = [
     ("open twitter on chrome", "navigate_browser"),  # not open_app
     ("who is priya", "search_memory"),
     ("what's the latest news on football", "search_web"),
+    ("read this article for me https://www.bbc.com/sport/football/12345", "read_page"),
     ("remind me to call mom in 10 minutes", "set_reminder"),
     ("set a timer for 5 minutes", "set_timer"),
     ("what reminders do i have", "list_reminders"),

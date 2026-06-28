@@ -1,6 +1,6 @@
 from typing import TypedDict, Callable, Optional
 
-from tools.web import search_web
+from tools.web import search_web, read_page
 from tools.shell import run_shell
 from tools.files import read_file, write_file
 from tools.apps import open_app, close_app
@@ -69,9 +69,14 @@ TOOLS: dict[str, Tool] = {
         "function": run_shell,
     },
     "search_web": {
-        "description": "Search the web for current information, news, facts.",
+        "description": "Search the web for current information, news, facts. Reads the top articles in full before answering.",
         "args": ["query"],
         "function": search_web,
+    },
+    "read_page": {
+        "description": "Open a specific web page or article by URL and read its full contents. Use when the user gives or refers to a link, or wants you to read/go deeper on a particular article.",
+        "args": ["url"],
+        "function": read_page,
     },
     "read_file": {
         "description": "Read the contents of a file at the given absolute path.",
