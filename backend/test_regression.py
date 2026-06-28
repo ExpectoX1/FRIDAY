@@ -31,6 +31,12 @@ ROUTING_CASES = [
     ("find and play the latest yjr video", True),
     ("markaroni is live, can you open the stream", True),
     ("play the latest yjr video", True),
+    # Reminders/timers are single tool calls, not agent jobs — even when the
+    # reminder body itself contains agent-y words ("remind me to commit ...").
+    ("remind me to call mom in 10 minutes", False),
+    ("set a timer for 5 minutes", False),
+    ("remind me to commit my project at 6pm", False),
+    ("what reminders do i have", False),
 ]
 
 # (utterance, expected tool name, or "reply")
@@ -43,6 +49,9 @@ TOOL_CASES = [
     ("open twitter on chrome", "navigate_browser"),  # not open_app
     ("who is priya", "search_memory"),
     ("what's the latest news on football", "search_web"),
+    ("remind me to call mom in 10 minutes", "set_reminder"),
+    ("set a timer for 5 minutes", "set_timer"),
+    ("what reminders do i have", "list_reminders"),
 ]
 
 

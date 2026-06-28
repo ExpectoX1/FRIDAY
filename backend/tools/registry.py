@@ -8,6 +8,7 @@ from tools.datetime_tool import get_date_time
 from tools.media import play_media
 from tools.mac_core import get_running_apps, take_screenshot
 from tools.vision import look_at_screen
+from tools.reminders import set_reminder, set_timer, list_reminders, cancel_reminder
 from memory.retrieve import search_memory
 
 
@@ -116,6 +117,26 @@ TOOLS: dict[str, Tool] = {
         "args": ["question"],
         "function": look_at_screen,
     },
+    "set_reminder": {
+        "description": "Set a reminder to tell the user something at a later time. Use for 'remind me to X in N minutes', 'remind me to X at 5pm', 'remind me every day at 8 to X'. Pass what to remind about as 'message' and the time as 'when'.",
+        "args": ["message", "when"],
+        "function": set_reminder,
+    },
+    "set_timer": {
+        "description": "Set a countdown timer that alerts the user when it elapses. Use for 'set a timer for 5 minutes' or 'timer for 10 minutes for the pasta'. Pass the length as 'duration' and an optional 'label'.",
+        "args": ["duration", "label"],
+        "function": set_timer,
+    },
+    "list_reminders": {
+        "description": "List all of the user's currently pending reminders and timers. Use for 'what reminders do I have', 'list my timers'.",
+        "args": [],
+        "function": list_reminders,
+    },
+    "cancel_reminder": {
+        "description": "Cancel a pending reminder or timer. Use for 'cancel my timer', 'cancel the reminder about X'. Pass a name, number, or leave 'which' empty if there's only one.",
+        "args": ["which"],
+        "function": cancel_reminder,
+    },
 }
 
 
@@ -147,6 +168,11 @@ ARG_DETAILS: dict[str, dict] = {
         "description": "Streaming service to use.",
         "enum": ["Spotify", "Netflix"],
     },
+    "message": {"type": "string", "description": "What to remind the user about, e.g. 'call mom'."},
+    "when": {"type": "string", "description": "When to fire: 'in 10 minutes', 'at 5:30pm', 'tomorrow at 9am', 'every day at 8'."},
+    "duration": {"type": "string", "description": "Timer length, e.g. '5 minutes' or '90 seconds'."},
+    "label": {"type": "string", "description": "Optional name for the timer (may be empty)."},
+    "which": {"type": "string", "description": "Which reminder/timer to cancel: a name, a number, or empty if only one."},
 }
 
 _TOOLS_SPEC_CACHE: Optional[list[dict]] = None

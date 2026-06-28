@@ -18,6 +18,7 @@ from logger import *
 from memory.store import store
 from memory.retrieve import search_memory
 from bridge import state_bus, server as bridge_server
+from proactive.scheduler import scheduler
 
 text_queue = queue.Queue()
 audio_queue = queue.Queue()
@@ -38,7 +39,7 @@ friday_done.set()
 # FRIDAY_BARGE_IN=1; tune sensitivity with FRIDAY_BARGE_THRESHOLD.
 BARGE_IN = os.getenv("FRIDAY_BARGE_IN", "0") == "1"
 BARGE_THRESHOLD = float(os.getenv("FRIDAY_BARGE_THRESHOLD", "0.06"))
-BARGE_BLOCKS = 2  # ~0.5s of sustained loud input before we treat it as a barge-in
+BARGE_BLOCKS = max(2, int(0.5 / BLOCK_DURATION))  # ~0.5s sustained loud input
 interrupt_event = threading.Event()
 
 LLM_INTERPRET = {"search_memory", "search_web"}
@@ -157,6 +158,18 @@ def enqueue_speech(text: str):
     state_bus.set_state(replyPreview=str(text)[:200])
     for chunk in _split_sentences(str(text)):
         text_queue.put(chunk)
+
+
+def speak_proactive(text: str):
+    """Make FRIDAY volunteer something the user didn't just ask for (a fired
+    reminder/timer). Rides the normal TTS pipeline so it pipelines and obeys
+    barge-in like any other reply. Called from the scheduler thread, so it must
+    only touch thread-safe primitives — enqueue_speech does (queue + state bus)."""
+    if not text:
+        return
+    log_system("proactive", f"Speaking proactively: {text}")
+    state_bus.set_state("speaking", outcome="neutral", message="Reminder", replyPreview=text[:200])
+    enqueue_speech(text)
 
 
 def _is_self_echo(heard: str) -> bool:
@@ -614,6 +627,13 @@ if __name__ == "__main__":
     player_thread.start()
     barge_thread.start()
     bridge_thread.start()
+
+    # Proactive layer: fire pending reminders/timers through the TTS pipeline.
+    # init() loads persisted triggers; start() spins the background scheduler
+    # thread and replays any reminders that came due while FRIDAY was offline.
+    # Started after the TTS workers so an overdue reminder has something to play it.
+    scheduler.init(speak=speak_proactive)
+    scheduler.start()
 
     if MENUBAR:
         try:

@@ -395,6 +395,15 @@ SIMPLE_SIGNALS = [
     "good evening", "good night", "tell me a joke", "who are you",
 ]
 
+# Reminders/timers are always a single tool call. Checked BEFORE COMPLEX_SIGNALS
+# because the reminder *body* often contains agent-y words ("remind me to commit
+# the project at 6pm") that would otherwise mis-escalate to the agent loop.
+REMINDER_SIGNALS = [
+    "remind me", "set a timer", "set a reminder", "timer for", "wake me",
+    "cancel my timer", "cancel the timer", "cancel my reminder",
+    "list my reminders", "what reminders", "what timers",
+]
+
 
 def is_complex(message: str) -> bool:
     """Routes an utterance to the agent loop (multi-step) vs single-shot chat.
@@ -409,6 +418,9 @@ def is_complex(message: str) -> bool:
     The heuristic is also the fallback if the router errors out.
     """
     text_lower = message.lower().strip()
+    if any(s in text_lower for s in REMINDER_SIGNALS):
+        return False
+
     if any(s in text_lower for s in COMPLEX_SIGNALS):
         return True
 
