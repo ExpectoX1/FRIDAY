@@ -5,7 +5,7 @@ from brain.llm import agent_chat, agent_chat_stream
 from brain.personality import get_personality
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run, execute as executor_execute
-from logger import log_system, log_tool, log_result, log_error
+from logger import log_system, log_tool, log_result, log_error, status
 from bridge import state_bus
 
 MAX_ITERATIONS = 10
@@ -24,6 +24,56 @@ def _tool_message(result) -> str:
     if isinstance(result, dict):
         return result.get("message") or result.get("content") or "Done, Sir."
     return str(result) if result else "Done, Sir."
+
+
+# A tool result is a failure only when it ANNOUNCES one — a dict with
+# status="error", or a string that *begins* with a known error marker. We must
+# never substring-match "error"/"exception"/"failed" anywhere in the result:
+# reading a file that imports HTTPException, or a search result that mentions an
+# error, is not a tool failure. That false positive used to flip last_failed and
+# send the agent flailing — e.g. running git on, and committing, an unrelated
+# repo to "fix" a failure that never happened.
+_ERROR_PREFIXES = (
+    "error",                              # "Error: ...", "Error reading file:", "Error writing file:"
+    "execution error",
+    "blocked:",                           # executor: blocked metachars / dangerous command
+    "file not found",                     # read_file miss
+    "search failed",                      # search_web / read_page
+    "fatal:",                             # git
+    "command not found",
+    "no such file",
+    "permission denied",
+    "traceback (most recent call last)",  # uncaught python error in a run_shell script
+)
+
+
+def _tool_failed(result) -> bool:
+    """True only when a tool announces a failure (see _ERROR_PREFIXES)."""
+    if isinstance(result, dict):
+        return str(result.get("status", "")).lower() == "error"
+    if isinstance(result, str):
+        return result.lstrip().lower().startswith(_ERROR_PREFIXES)
+    return False
+
+
+def _tool_status(name: str, args: dict | None = None) -> str:
+    args = args or {}
+    if name == "search_web":
+        return f"Searching: {args.get('query', '')}".strip()
+    if name == "read_page":
+        return "Reading the page"
+    if name == "search_memory":
+        return "Checking memory"
+    if name == "navigate_browser":
+        return "Opening the page"
+    if name == "run_shell":
+        command = str(args.get("command", "")).strip()
+        return f"Running: {command[:80]}" if command else "Running command"
+    if name == "play_media":
+        return "Starting playback"
+    if name == "get_date_time":
+        return "Checking the time"
+    return f"Running {name}"
 
 # Built once per process. The agent system prompt is static (personality +
 # tools list + cwd), so rebuilding it on every task — and re-deriving the
@@ -188,7 +238,9 @@ async def run_agent(
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         log_system("agent", f"Iteration {iteration}/{MAX_ITERATIONS}")
-        state_bus.set_state("thinking", message="Working on it...", tool=None)
+        step_message = "Planning next step..." if iteration == 1 else f"Planning step {iteration}..."
+        state_bus.set_state("thinking", message=step_message, tool=None)
+        status("Agent", step_message)
 
         def run_stream():
             res = None
@@ -239,7 +291,9 @@ async def run_agent(
             return {"type": "reply", "content": thought or "Done, Sir."}
 
         log_tool("agent", tool_name, tool_args)
-        state_bus.set_state("tool_running", tool=tool_name, message=f"Running {tool_name}...")
+        progress = _tool_status(tool_name, tool_args)
+        state_bus.set_state("tool_running", tool=tool_name, message=progress)
+        status("Agent", progress)
 
         tool_result = None
         try:
@@ -278,17 +332,7 @@ async def run_agent(
                 },
             }
 
-        is_error = isinstance(tool_result, str) and any(
-            x in tool_result.lower()
-            for x in [
-                "error",
-                "failed",
-                "exception",
-                "permission denied",
-                "not found",
-                "blocked",
-            ]
-        )
+        is_error = _tool_failed(tool_result)
 
         last_failed = is_error
         last_error = str(tool_result) if is_error else ""
