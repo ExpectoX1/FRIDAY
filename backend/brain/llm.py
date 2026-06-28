@@ -210,6 +210,32 @@ def _referential_open(message: str):
     return {"type": "tool", "name": "navigate_browser", "args": {"url": urls[0]}} if urls else None
 
 
+def cloud_available() -> bool:
+    """A Groq key is configured, so cloud routing is possible."""
+    return bool(os.getenv("GROQ_API") or os.getenv("GROQ_API_KEY"))
+
+
+def ask(prompt: str, system: str | None = None, use_cloud: bool = False) -> str:
+    """Stateless single-turn brain call — no tools, no history. Routes to the
+    cloud brain (Groq) when use_cloud and a key is present, else local qwen3.
+    Used for follow-up code Q&A where we want a focused answer, optionally from
+    the more capable cloud model for deep questions."""
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    if use_cloud and cloud_available():
+        try:
+            r = _groq().chat.completions.create(model=CLOUD_MODEL, messages=messages)
+            return (r.choices[0].message.content or "").strip()
+        except Exception:
+            pass  # cloud hiccup — fall through to local
+
+    resp = ollama.chat(model=MODEL, messages=messages, keep_alive=KEEP_ALIVE, think=False)
+    return (resp.message.content or "").strip()
+
+
 def chat(message: str) -> dict:
     """Single-shot chat — used for simple queries and tool result interpretation.
 

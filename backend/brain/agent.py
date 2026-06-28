@@ -371,7 +371,9 @@ async def run_agent(
         log_result("agent", tool_result)
         try:
             from bridge.activity import emit_tool_activity
+            from brain import code_context
             emit_tool_activity(tool_name, tool_args, tool_result)  # code/file cards to the window
+            code_context.record_tool(tool_name, tool_args, tool_result)  # remember for follow-ups
         except Exception:
             pass
 

@@ -19,6 +19,7 @@ from memory.store import store
 from memory.retrieve import search_memory
 from bridge import state_bus, server as bridge_server
 from bridge.activity import deliver_reply, emit_tool_activity
+from brain import code_context
 from proactive.scheduler import scheduler
 from local_code import prepare_code_review, answer_code_review
 
@@ -429,6 +430,7 @@ async def handle_response(response: dict):
 
         log_result("tool", result)
         emit_tool_activity(name, args, result)  # file_read/code_snippet/diff to the window
+        code_context.record_tool(name, args, result)  # keep read files for follow-ups
 
         # Remember this result so the next turn can resolve "open it / that page /
         # the chords" against it (single-shot otherwise forgets tool output).
@@ -689,6 +691,20 @@ async def assistant_loop():
             # deterministically via the find_project tool instead. Re-enable for
             # experiments with FRIDAY_LOCAL_CODE=1.
             if LOCAL_CODE_INTERCEPT and await _handle_local_code_request(text):
+                continue
+
+            # Follow-up about code we've already read — answer FROM the working
+            # set (no re-reading, no fresh agent loop), routing deep questions to
+            # the cloud brain. This is what lets her chain "how does X work" /
+            # "is it secure" instead of re-summarizing the file generically.
+            if code_context.is_followup(text):
+                use_cloud = code_context.should_use_cloud(text)
+                log_system("main", f"Code follow-up ({'cloud' if use_cloud else 'local'} brain).")
+                state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+                answer, _ = await asyncio.to_thread(code_context.answer_followup, text)
+                status("FRIDAY", answer)
+                deliver_reply(answer, enqueue_speech)
+                asyncio.create_task(store(f"User: {text}"))
                 continue
 
             complex_request = await asyncio.to_thread(is_complex, text)
