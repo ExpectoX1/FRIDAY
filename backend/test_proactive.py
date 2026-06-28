@@ -115,6 +115,60 @@ def test_recurring_reschedules():
     return fails
 
 
+def test_web_monitor():
+    """Monitor primes silently, dedups seen results, and only speaks when the
+    (stubbed) brain judges a NEW result important. No network, no LLM."""
+    from proactive.monitors import check_web_monitor
+
+    fails = []
+    results = {"out": "Top Results:\n- A (URL: https://x.com/1)\n- B (URL: https://x.com/2)"}
+
+    def search_fn(_query):
+        return results["out"]
+
+    judged = []
+
+    def judge_fn(_q, _out, _last):
+        judged.append(1)
+        return "Sir, big news just dropped."
+
+    t = Trigger(message="Fabrizio Barcelona", fire_at=0, kind="monitor",
+                state={"query": "Fabrizio Barcelona", "seen": [], "primed": False, "last_alert": ""})
+
+    # 1st poll: primes the baseline, must stay silent and not call the judge.
+    if check_web_monitor(t, search_fn, judge_fn) is not None:
+        fails.append("monitor alerted on its priming poll")
+    if judged:
+        fails.append("judge called during priming")
+
+    # 2nd poll, nothing new: silent, judge still not called.
+    if check_web_monitor(t, search_fn, judge_fn) is not None:
+        fails.append("monitor alerted with no new results")
+    if judged:
+        fails.append("judge called with no new results")
+
+    # New result appears: judge runs and its alert is spoken.
+    results["out"] += "\n- C (URL: https://x.com/3)"
+    alert = check_web_monitor(t, search_fn, judge_fn)
+    if alert != "Sir, big news just dropped.":
+        fails.append(f"monitor did not surface new-and-important result: {alert!r}")
+    if t.state.get("last_alert") != alert:
+        fails.append("last_alert not recorded")
+
+    # Same result again -> already seen -> silent, judge not called again.
+    before = len(judged)
+    if check_web_monitor(t, search_fn, judge_fn) is not None:
+        fails.append("monitor re-alerted on an already-seen result")
+    if len(judged) != before:
+        fails.append("judge re-ran on an already-seen result")
+
+    # Brain says 'not important' -> stay silent even though the result is new.
+    results["out"] += "\n- D (URL: https://x.com/4)"
+    if check_web_monitor(t, search_fn, lambda *_: None) is not None:
+        fails.append("monitor spoke despite brain judging it unimportant")
+    return fails
+
+
 def run():
     all_fails = []
     for name, fn in [
@@ -122,6 +176,7 @@ def run():
         ("scheduler fires", test_scheduler_fires),
         ("persistence", test_scheduler_persistence),
         ("recurring", test_recurring_reschedules),
+        ("web monitor", test_web_monitor),
     ]:
         fails = fn()
         status = "PASS" if not fails else "FAIL"

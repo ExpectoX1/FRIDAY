@@ -9,6 +9,7 @@ from tools.media import play_media
 from tools.mac_core import get_running_apps, take_screenshot
 from tools.vision import look_at_screen
 from tools.reminders import set_reminder, set_timer, list_reminders, cancel_reminder
+from tools.monitor import set_monitor
 from memory.retrieve import search_memory
 
 
@@ -133,9 +134,14 @@ TOOLS: dict[str, Tool] = {
         "function": list_reminders,
     },
     "cancel_reminder": {
-        "description": "Cancel a pending reminder or timer. Use for 'cancel my timer', 'cancel the reminder about X'. Pass a name, number, or leave 'which' empty if there's only one.",
+        "description": "Cancel a pending reminder, timer, or monitor. Use for 'cancel my timer', 'stop watching X', 'cancel the reminder about X'. Pass a name, number, or leave 'which' empty if there's only one.",
         "args": ["which"],
         "function": cancel_reminder,
+    },
+    "set_monitor": {
+        "description": "Watch the web for a topic and proactively alert the user when something new and important appears. Use for topics/people/news: 'monitor Fabrizio for Barcelona news', 'keep an eye on bitcoin', 'tell me when X happens', 'watch Fabrizio's tweets'. Pass what to watch as 'query' and an optional check 'interval' like 'every 30 minutes'.",
+        "args": ["query", "interval"],
+        "function": set_monitor,
     },
 }
 
@@ -172,7 +178,8 @@ ARG_DETAILS: dict[str, dict] = {
     "when": {"type": "string", "description": "When to fire: 'in 10 minutes', 'at 5:30pm', 'tomorrow at 9am', 'every day at 8'."},
     "duration": {"type": "string", "description": "Timer length, e.g. '5 minutes' or '90 seconds'."},
     "label": {"type": "string", "description": "Optional name for the timer (may be empty)."},
-    "which": {"type": "string", "description": "Which reminder/timer to cancel: a name, a number, or empty if only one."},
+    "which": {"type": "string", "description": "Which reminder/timer/monitor to cancel: a name, a number, or empty if only one."},
+    "interval": {"type": "string", "description": "How often to check, e.g. 'every 30 minutes' or '1 hour'. Empty defaults to 30 minutes."},
 }
 
 _TOOLS_SPEC_CACHE: Optional[list[dict]] = None

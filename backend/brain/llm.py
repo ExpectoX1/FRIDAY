@@ -395,13 +395,19 @@ SIMPLE_SIGNALS = [
     "good evening", "good night", "tell me a joke", "who are you",
 ]
 
-# Reminders/timers are always a single tool call. Checked BEFORE COMPLEX_SIGNALS
-# because the reminder *body* often contains agent-y words ("remind me to commit
-# the project at 6pm") that would otherwise mis-escalate to the agent loop.
+# Proactive single tool calls (reminders, timers, monitors). Checked BEFORE
+# COMPLEX_SIGNALS because the request *body* often contains agent-y words
+# ("remind me to commit the project at 6pm", "monitor X and tell me") that would
+# otherwise mis-escalate to the multi-step agent loop.
 REMINDER_SIGNALS = [
     "remind me", "set a timer", "set a reminder", "timer for", "wake me",
     "cancel my timer", "cancel the timer", "cancel my reminder",
     "list my reminders", "what reminders", "what timers",
+    # Web / X monitors — "watch for X and tell me", "monitor Fabrizio's tweets"
+    "monitor ", "keep an eye on", "keep me posted", "let me know when",
+    "let me know if", "notify me when", "alert me when", "watch for",
+    "tell me when", "stop watching", "stop monitoring",
+    "tweets", "tweet", "on twitter", " on x ", "posts on x",
 ]
 
 

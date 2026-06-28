@@ -62,12 +62,17 @@ def set_timer(duration: str, label: str = "") -> dict:
 
 
 def list_reminders() -> dict:
-    """List all pending reminders and timers."""
+    """List all pending reminders, timers, and monitors."""
     pending = scheduler.list_pending()
     if not pending:
-        return {"status": "success", "message": "You have no reminders or timers set, Sir."}
+        return {"status": "success", "message": "You have nothing scheduled, Sir."}
     lines = []
     for i, t in enumerate(pending, 1):
+        if t.kind == "monitor":
+            every = (t.recurrence or {}).get("seconds", 0)
+            cadence = f" (every {int(round(every / 60))} min)" if every else ""
+            lines.append(f"{i}. watching {t.message}{cadence}")
+            continue
         what = t.message or ("timer" if t.kind == "timer" else "(unnamed)")
         recur = " (daily)" if (t.recurrence or {}).get("kind") == "daily" else ""
         lines.append(f"{i}. {what} — {_spoken_time(t.fire_at)}{recur}")

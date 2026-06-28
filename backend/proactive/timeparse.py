@@ -174,6 +174,19 @@ def _parse_absolute(text: str, now: float, now_dt: datetime) -> Optional[ParsedT
     return None
 
 
+def parse_interval(text: str, default: float = 1800.0) -> float:
+    """Parse a polling interval ("every 30 minutes", "15 mins", "1 hour") into
+    seconds. Falls back to `default` (30 min) when nothing usable is found, so a
+    monitor is never created with a zero/garbage cadence."""
+    if not text or not text.strip():
+        return default
+    total = 0.0
+    for value, unit in _PAIR_RE.findall(text.lower()):
+        if unit in _UNIT_SECONDS:
+            total += float(value) * _UNIT_SECONDS[unit]
+    return total if total > 0 else default
+
+
 def parse_when(when: str, now: Optional[float] = None) -> Optional[ParsedTime]:
     """Parse a free-text time spec into an absolute fire time + recurrence.
 

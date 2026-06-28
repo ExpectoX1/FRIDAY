@@ -37,6 +37,12 @@ ROUTING_CASES = [
     ("set a timer for 5 minutes", False),
     ("remind me to commit my project at 6pm", False),
     ("what reminders do i have", False),
+    # Web monitors are a single set_monitor call, even though the body sounds
+    # research-y ("monitor ... and tell me ... news").
+    ("monitor fabrizio for barcelona news", False),
+    ("keep an eye on bitcoin price and let me know", False),
+    ("monitor fabrizio romano's tweets", False),
+    ("tell me when elon musk tweets", False),
 ]
 
 # (utterance, expected tool name, or "reply")
@@ -52,6 +58,8 @@ TOOL_CASES = [
     ("remind me to call mom in 10 minutes", "set_reminder"),
     ("set a timer for 5 minutes", "set_timer"),
     ("what reminders do i have", "list_reminders"),
+    ("monitor fabrizio for barcelona transfer news", "set_monitor"),
+    ("monitor fabrizio romano's tweets", "set_monitor"),  # X scraping dropped -> web monitor
 ]
 
 

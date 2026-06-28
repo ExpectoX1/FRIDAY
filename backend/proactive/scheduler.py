@@ -30,11 +30,12 @@ TICK_SECONDS = 1.0
 
 @dataclass
 class Trigger:
-    message: str                     # what FRIDAY says when it fires
+    message: str                     # what FRIDAY says when it fires (for speak kinds)
     fire_at: float                   # epoch seconds of the next firing
-    kind: str = "reminder"           # reminder | timer | (future: event kinds)
+    kind: str = "reminder"           # reminder | timer | monitor | (future kinds)
     recurrence: Optional[dict] = None
     label: str = ""                  # optional name for cancel-by-name
+    state: dict = field(default_factory=dict)  # kind-specific persisted data (e.g. a monitor's seen-set)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     created_at: float = field(default_factory=time.time)
 
@@ -47,20 +48,46 @@ class Trigger:
         return cls(**known)
 
 
-# kind -> predicate(trigger, now) -> bool. Time-based kinds share one predicate;
-# future event kinds register their own without touching the loop.
+# A trigger kind is defined by two callables:
+#   predicate(trigger, now) -> bool        : is it time to evaluate this trigger?
+#   action(trigger) -> Optional[str]       : evaluate it; return text to SPEAK,
+#                                            or None to stay silent this time.
+# Time-based reminders/timers share _time_due and just speak their phrasing.
+# A monitor reuses _time_due (fires on its interval) but its action does the
+# real work — poll the web, judge novelty, and return an alert only when one is
+# warranted. New proactive behaviors register a kind here and never touch the loop.
 def _time_due(trigger: Trigger, now: float) -> bool:
     return now >= trigger.fire_at
+
+
+def _speak_message(trigger: Trigger) -> Optional[str]:
+    return _phrase_for(trigger)
 
 
 _KIND_PREDICATES: dict[str, Callable[[Trigger, float], bool]] = {
     "reminder": _time_due,
     "timer": _time_due,
 }
+_KIND_ACTIONS: dict[str, Callable[[Trigger], Optional[str]]] = {
+    "reminder": _speak_message,
+    "timer": _speak_message,
+}
+
+# Kinds that should replay on startup if their time passed while FRIDAY was
+# offline (a missed reminder matters; a missed monitor poll does not — it just
+# rolls forward and polls fresh).
+_REPLAY_ON_STARTUP = {"reminder", "timer"}
 
 
-def register_kind(kind: str, predicate: Callable[[Trigger, float], bool]) -> None:
-    """Register a new trigger kind with its own due-predicate (extensibility hook)."""
+def register_kind(
+    kind: str,
+    action: Callable[[Trigger], Optional[str]],
+    predicate: Callable[[Trigger, float], bool] = _time_due,
+) -> None:
+    """Register a new trigger kind: an `action` (returns text to speak or None)
+    and an optional due-`predicate` (defaults to time-based). Extensibility hook —
+    adding a proactive behavior is additive and never touches the scheduler loop."""
+    _KIND_ACTIONS[kind] = action
     _KIND_PREDICATES[kind] = predicate
 
 
@@ -145,8 +172,13 @@ class Scheduler:
                     self._reschedule_or_retire(t)
             if due:
                 self._save()
+        # Actions run outside the lock — a monitor's web search + brain judgment
+        # can take seconds and must not block list/cancel/add from other threads.
         for t in due:
             self._fire(t)
+        if due:
+            with self._lock:
+                self._save()  # actions may have mutated trigger.state (monitor seen-set)
 
     def _reschedule_or_retire(self, t: Trigger) -> None:
         """Caller holds the lock. Recurring triggers advance to their next time;
@@ -157,13 +189,19 @@ class Scheduler:
         else:
             t.fire_at = nxt
 
-    def _fire(self, t: Trigger) -> None:
+    def _fire(self, t: Trigger, prefix: str = "") -> None:
         if self._speak is None:
             return
+        action = _KIND_ACTIONS.get(t.kind, _speak_message)
         try:
-            self._speak(_phrase_for(t))
+            text = action(t)            # may stay silent (monitor with nothing new)
         except Exception:
-            pass
+            text = None
+        if text:
+            try:
+                self._speak(prefix + text)
+            except Exception:
+                pass
 
     def _fire_overdue_on_startup(self) -> None:
         """Fire one-shot triggers whose time passed while FRIDAY was offline, so a
@@ -173,16 +211,15 @@ class Scheduler:
         with self._lock:
             for t in list(self._triggers):
                 if now >= t.fire_at:
-                    overdue.append(t)
+                    # Monitors don't replay a missed poll — just roll forward and
+                    # poll fresh on the next tick. Only reminders/timers speak.
+                    if t.kind in _REPLAY_ON_STARTUP:
+                        overdue.append(t)
                     self._reschedule_or_retire(t)
-            if overdue:
+            if overdue or self._triggers:
                 self._save()
         for t in overdue:
-            if self._speak is not None:
-                try:
-                    self._speak("While you were away — " + _phrase_for(t))
-                except Exception:
-                    pass
+            self._fire(t, prefix="While you were away — ")
 
     def _load(self) -> None:
         try:
