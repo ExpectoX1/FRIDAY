@@ -11,6 +11,9 @@ from tools.vision import look_at_screen
 from tools.reminders import set_reminder, set_timer, list_reminders, cancel_reminder
 from tools.monitor import set_monitor
 from tools.projects import find_project, read_project_file
+from tools.calendar_tool import get_calendar
+from tools.gmail_tool import read_email
+from tools.email_watch import watch_email
 from memory.retrieve import search_memory
 
 
@@ -159,6 +162,21 @@ TOOLS: dict[str, Tool] = {
         "args": ["query", "interval"],
         "function": set_monitor,
     },
+    "get_calendar": {
+        "description": "Read the user's macOS Calendar events for a time range. Use for 'what's on my calendar', 'what's my schedule', 'do I have any meetings today', 'what's on tomorrow', 'what's on this week'. Pass the range as 'timeframe' ('today', 'tomorrow', 'this week'); empty defaults to today. Read-only — this never creates or changes events.",
+        "args": ["timeframe"],
+        "function": get_calendar,
+    },
+    "read_email": {
+        "description": "Read the user's Gmail inbox ONCE, right now. Use for 'check my email', 'any new mail', 'read my emails', 'emails from Priya', 'any important emails today', 'do I have unread mail'. Pass what to read as 'filter' ('unread', 'starred', 'important', 'from <name>', 'today'); empty reads unread mail. Read-only. NOT for setting up ongoing alerts — use watch_email for that.",
+        "args": ["filter"],
+        "function": read_email,
+    },
+    "watch_email": {
+        "description": "Proactively WATCH the user's Gmail in the background and alert them when NEW matching mail arrives. Use for 'tell me when I get an important email', 'alert me about starred mail', 'let me know when I get an email from my boss', 'watch my inbox'. Pass what to watch as 'criteria' ('important', 'starred', 'from boss@x.com') and an optional check 'interval' like 'every 10 minutes'. This is an ongoing watch — different from read_email, which reads once now.",
+        "args": ["criteria", "interval"],
+        "function": watch_email,
+    },
 }
 
 
@@ -196,6 +214,9 @@ ARG_DETAILS: dict[str, dict] = {
     "label": {"type": "string", "description": "Optional name for the timer (may be empty)."},
     "which": {"type": "string", "description": "Which reminder/timer/monitor to cancel: a name, a number, or empty if only one."},
     "interval": {"type": "string", "description": "How often to check, e.g. 'every 30 minutes' or '1 hour'. Empty defaults to 30 minutes."},
+    "timeframe": {"type": "string", "description": "Calendar range to read: 'today', 'tomorrow', or 'this week'. Empty defaults to today."},
+    "filter": {"type": "string", "description": "Which mail to read: 'unread', 'starred', 'important', 'from <name>', 'today'. Empty reads unread mail."},
+    "criteria": {"type": "string", "description": "Which mail to watch for: 'important', 'starred', or 'from <email>'. Empty watches important mail."},
     "project": {"type": "string", "description": "The project name the user mentioned (may be misheard, e.g. 'teeny url')."},
     "filename": {"type": "string", "description": "File to read, e.g. 'main.py'. Empty reads the project's main entry file."},
 }
