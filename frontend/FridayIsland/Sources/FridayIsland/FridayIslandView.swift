@@ -170,6 +170,10 @@ struct FridayIslandView: View {
 
                 Spacer(minLength: 8)
 
+                if event.usesCloudBrain {
+                    cloudBadge
+                }
+
                 Text(store.connectionStatus.title)
                     .font(.system(size: 9, weight: .medium, design: .rounded))
                     .foregroundStyle(IslandPalette.cream.opacity(0.64))
@@ -278,6 +282,24 @@ struct FridayIslandView: View {
             .buttonStyle(IslandIconButtonStyle())
             .disabled(store.inputAvailable && prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+    }
+
+    private var cloudBadge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 8, weight: .bold))
+            Text("Cloud")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+        }
+        .foregroundStyle(IslandPalette.lavender)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(IslandPalette.lavender.opacity(0.16), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(IslandPalette.lavender.opacity(0.4), lineWidth: 0.5)
+        }
+        .transition(.opacity.combined(with: .scale))
+        .help("Running on the cloud brain (Groq)")
     }
 
     private var connectionDot: some View {

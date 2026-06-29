@@ -7,7 +7,7 @@ final class FridayControlWindowController {
 
     init(store: AssistantStore) {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -15,7 +15,7 @@ final class FridayControlWindowController {
         window.title = "FRIDAY"
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unifiedCompact
-        window.minSize = NSSize(width: 520, height: 360)
+        window.minSize = NSSize(width: 720, height: 500)
         window.isReleasedWhenClosed = false
         window.center()
         window.contentView = NSHostingView(

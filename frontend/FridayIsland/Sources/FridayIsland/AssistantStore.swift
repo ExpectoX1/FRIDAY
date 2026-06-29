@@ -8,6 +8,7 @@ final class AssistantStore: ObservableObject {
     @Published private(set) var activity: [AssistantActivity] = [
         AssistantActivity(kind: .status, text: "FRIDAY is starting up.")
     ]
+    @Published private(set) var streamingReply = ""
     @Published private(set) var inputAvailable = true
     @Published private(set) var inputDisabledReason: String?
     @Published var lastActionError: String?
@@ -39,6 +40,7 @@ final class AssistantStore: ObservableObject {
         connectionStatus = .connecting
         lastActionError = nil
         seenActivityIDs.removeAll()
+        streamingReply = ""
 
         connectionTask = Task { [weak self] in
             await self?.connectLoop()
@@ -74,6 +76,16 @@ final class AssistantStore: ObservableObject {
         lastActionError = nil
     }
 
+    func clearActivity() {
+        activity.removeAll()
+        seenActivityIDs.removeAll()
+        lastTranscript = nil
+        lastReplyPreview = nil
+        lastStatusKey = nil
+        streamingReply = ""
+        append(.status, "Cleared the window.")
+    }
+
     func approve(_ approved: Bool) {
         Task {
             do {
@@ -106,6 +118,7 @@ final class AssistantStore: ObservableObject {
 
     private func apply(_ newEvent: AssistantEvent) {
         event = newEvent
+        applyStreamingReply(from: newEvent)
 
         if !newEvent.activity.isEmpty {
             appendBackendActivity(newEvent.activity)
@@ -136,6 +149,26 @@ final class AssistantStore: ObservableObject {
         if let reply = clean(newEvent.replyPreview), reply != lastReplyPreview {
             append(.assistantMessage, reply)
             lastReplyPreview = reply
+        }
+    }
+
+    private func applyStreamingReply(from event: AssistantEvent) {
+        let incoming = event.streamingReply ?? ""
+        if !incoming.isEmpty {
+            streamingReply = incoming
+            return
+        }
+
+        if event.activity.contains(where: { $0.kind == .assistantMessage }) {
+            streamingReply = ""
+            return
+        }
+
+        switch event.state {
+        case .idle, .listening, .transcribing, .toolRunning, .approvalRequired, .error:
+            streamingReply = ""
+        case .thinking, .speaking:
+            break
         }
     }
 

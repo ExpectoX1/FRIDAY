@@ -91,7 +91,13 @@ struct AssistantEvent: Codable, Equatable {
     var requiresApproval: Bool?
     var pendingCommand: String?
     var amplitude: Double?
+    var brain: String?
+    var streamingReply: String?
     var activity: [AssistantActivity] = []
+
+    /// True when the active turn is being handled by the cloud brain (Groq) —
+    /// either FRIDAY_BRAIN=cloud or a deep code follow-up routed to the cloud.
+    var usesCloudBrain: Bool { brain == "cloud" }
 
     static let idle = AssistantEvent(
         state: .idle,
@@ -103,6 +109,8 @@ struct AssistantEvent: Codable, Equatable {
         requiresApproval: false,
         pendingCommand: nil,
         amplitude: nil,
+        brain: nil,
+        streamingReply: nil,
         activity: []
     )
 }
