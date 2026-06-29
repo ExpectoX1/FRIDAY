@@ -17,13 +17,68 @@ _NEWS_HINTS = (
 
 # How many top results to actually open and read (like WebFetch). Reading the
 # real article — not a 150-char snippet — is what makes the answer grounded.
-_READ_TOP_N = 2
-_PER_ARTICLE_CHARS = 1200
+_READ_TOP_N = 3
+_PER_ARTICLE_CHARS = 1500
+
+# A single search is brittle: a niche query, an over-narrow news window, or a
+# conversational phrasing can all return nothing. Instead of giving up, we
+# iterate the way a person does — retry as a general search, then reformulate —
+# but bounded so a dead query can't spin. Each retry only happens on EMPTY
+# results, so a normal search still costs exactly one round-trip.
+_MAX_SEARCH_ROUNDS = 3
+
+# Filler/scaffolding words stripped from a query when we have to reformulate
+# without the brain (deterministic fallback). Keeps the content words.
+_FILLER = {
+    "can", "you", "could", "please", "tell", "me", "what", "whats", "what's",
+    "is", "are", "the", "a", "an", "of", "for", "do", "does", "did", "i",
+    "want", "to", "know", "about", "hey", "friday", "find", "out", "search",
+    "look", "up", "give", "show", "on", "this", "that",
+}
 
 
 def _is_newsy(query: str) -> bool:
     q = query.lower()
     return any(h in q for h in _NEWS_HINTS)
+
+
+def _strip_filler(query: str) -> str:
+    """Deterministic query rewrite: drop conversational scaffolding, keep the
+    content words. Used as the fallback when the brain-based rewrite is
+    unavailable. Never returns empty — falls back to the original."""
+    words = [w for w in re.findall(r"[\w'-]+", query) if w.lower() not in _FILLER]
+    return " ".join(words) or query
+
+
+def _reformulate(query: str) -> str:
+    """Rewrite a query that returned NOTHING into a cleaner search query. Tries
+    the local brain for a real rewrite, falling back to a deterministic
+    filler-strip. Only called on an empty result set, so its latency is rare."""
+    try:
+        from brain.llm import ask  # lazy: avoids tools<->brain import cycle
+
+        rewritten = ask(
+            "Rewrite this as a concise web-search query: keywords only, no "
+            "question words, no quotes, no explanation. Reply with ONLY the "
+            f'query on one line.\n\n"{query}"'
+        ).strip().strip('"').strip()
+        # Guard against the model returning prose instead of a query.
+        if rewritten and "\n" not in rewritten and len(rewritten) <= len(query) + 40:
+            return rewritten
+    except Exception:
+        pass
+    return _strip_filler(query)
+
+
+def _do_search(query: str, newsy: bool) -> dict:
+    return client.search(
+        query=query,
+        search_depth="advanced",
+        topic="news" if newsy else "general",
+        days=7 if newsy else None,
+        max_results=5,
+        include_answer=True,
+    )
 
 
 def _extract_pages(urls: list[str]) -> dict[str, str]:
@@ -47,21 +102,29 @@ def _extract_pages(urls: list[str]) -> dict[str, str]:
 def search_web(query: str) -> str:
     """Search the web, then actually OPEN and READ the top results before
     answering — search -> fetch -> read, the way a person researches, rather
-    than summarizing search-result blurbs."""
+    than summarizing search-result blurbs. Iterates on empty results: retries a
+    too-narrow news query as a general search, then reformulates the wording,
+    so a niche or conversational query still finds something."""
     try:
-        response = client.search(
-            query=query,
-            search_depth="advanced",          # better, more relevant results
-            topic="news" if _is_newsy(query) else "general",
-            days=7 if _is_newsy(query) else None,
-            max_results=5,
-            include_answer=True,              # Tavily's own quick summary
-        )
+        newsy = _is_newsy(query)
+        current = query
+        answer, results = None, []
 
-        answer = response.get("answer")
-        results = response.get("results", [])
+        for _ in range(_MAX_SEARCH_ROUNDS):
+            response = _do_search(current, newsy)
+            answer = response.get("answer") or answer
+            results = response.get("results", [])
+            if results:
+                break
+            # Nothing came back. A news topic capped to 7 days often has nothing
+            # for a niche query — drop to a general search first; only then is it
+            # worth rewording the query itself.
+            if newsy:
+                newsy = False
+            else:
+                current = _reformulate(current)
 
-        # Open and read the top couple of articles (full text, not snippets).
+        # Open and read the top results in full (text, not snippets).
         top_urls = [r["url"] for r in results[:_READ_TOP_N] if r.get("url")]
         pages = _extract_pages(top_urls)
 

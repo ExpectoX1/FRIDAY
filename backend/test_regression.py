@@ -13,8 +13,55 @@ possible; a case that fails consistently is a real regression.
 import sys
 from brain.llm import is_complex, chat
 import brain.llm as llm
-from brain.agent import _tool_failed, _announces_next_action
+from datetime import datetime
+from brain.agent import _tool_failed, _announces_next_action, _parse_verdict
+from tools.web import _strip_filler, _is_newsy
+from tools.calendar_tool import _parse_range
+from tools.gmail_tool import _to_gmail_query
 from local_code import prepare_code_review
+
+# (spoken request, substrings that MUST appear in the Gmail search) — the
+# natural-language → Gmail-search translation is pure, so we pin it without an
+# account. Gmail's X-GM-RAW syntax is what makes "important/starred/from" work.
+GMAIL_QUERY_CASES = [
+    ("", ["is:unread"]),
+    ("any unread mail", ["is:unread"]),
+    ("starred emails", ["is:starred"]),
+    ("important emails today", ["is:important", "newer_than:1d"]),
+    ("emails from priya", ["from:priya"]),
+    ("starred mail from boss this week", ["is:starred", "from:boss", "newer_than:7d"]),
+]
+
+# (timeframe phrase, expected label) — the calendar range parser is pure, so we
+# can pin its boundaries without needing Calendar access.
+_CAL_NOW = datetime(2026, 6, 30, 9, 0)  # a Tuesday
+CAL_RANGE_CASES = [
+    ("", "today"),
+    ("today", "today"),
+    ("what's on tomorrow", "tomorrow"),
+    ("this week", "this week"),
+    ("next 7 days", "this week"),
+    ("this month", "this month"),
+]
+
+# (verifier reply, expected achieved) — the success verifier must fail OPEN: only
+# an explicit NOT_ACHIEVED blocks completion; anything ambiguous or malformed is
+# treated as achieved so it can never strand the user on its own confusion.
+VERDICT_CASES = [
+    ("ACHIEVED", True),
+    ("NOT_ACHIEVED: nothing was staged, so the commit is empty", False),
+    ("NOT ACHIEVED: the push did not run", False),
+    ("The goal looks done to me.", True),         # no marker -> achieved
+    ("", True),                                    # empty -> fail open
+    ("ACHIEVED — file written with the requested content", True),
+]
+
+# (query, expected substrings present / absent after filler-strip) — the
+# deterministic reformulation fallback keeps content words, drops scaffolding.
+FILLER_CASES = [
+    ("can you tell me what the weather is", ["weather"]),
+    ("hey friday find out about the barcelona transfer news", ["barcelona", "transfer", "news"]),
+]
 
 # (reply text, expected _announces_next_action) — a reply that only ANNOUNCES an
 # inspection it hasn't done ("Let me take a look at main.py") must not count as
@@ -78,6 +125,21 @@ ROUTING_CASES = [
     ("keep an eye on bitcoin price and let me know", False),
     ("monitor fabrizio romano's tweets", False),
     ("tell me when elon musk tweets", False),
+    # Calendar reads are single get_calendar calls — single-shot, not the agent.
+    ("what's on my calendar today", False),
+    ("do i have any meetings tomorrow", False),
+    ("what's my schedule this week", False),
+    # News/info lookups MUST stay single-shot (one search → concise summary).
+    # Regression: routed to the agent, which dumped a raw scrape as a markdown
+    # doc and spoke "It seems you have provided a mix of content from Reuters".
+    ("can you get me the news from around the world", False),
+    ("what's the latest news", False),
+    # Gmail reads (single read_email) and watchers (single watch_email) are
+    # single-shot, never the agent loop.
+    ("check my email", False),
+    ("any new mail from priya", False),
+    ("tell me when i get an important email", False),
+    ("watch my inbox for starred mail", False),
 ]
 
 # (utterance, expected tool name, or "reply")
@@ -96,6 +158,11 @@ TOOL_CASES = [
     ("what reminders do i have", "list_reminders"),
     ("monitor fabrizio for barcelona transfer news", "set_monitor"),
     ("monitor fabrizio romano's tweets", "set_monitor"),  # X scraping dropped -> web monitor
+    ("what's on my calendar today", "get_calendar"),
+    ("do i have any meetings tomorrow", "get_calendar"),
+    ("check my email", "read_email"),
+    ("any new mail from priya", "read_email"),
+    ("tell me when i get an important email", "watch_email"),
 ]
 
 
@@ -117,6 +184,14 @@ LOCAL_CODE_CASES = [
     ("does the teeny URL app look clean", "teenyurl", "main.py"),
     ("check out the teeny oral project and in that check out main dot p y", "teenyurl", "main.py"),
     ("what is the main dot p by file do in the teeny URL folder", "teenyurl", "main.py"),
+]
+
+# (utterance, expected_is_complex) — NO keyword signal, so these actually hit the
+# qwen2.5:3b router. With the few-shot prompt + temperature 0 they should be
+# stable run-to-run; a consistent failure here is a real router regression.
+ROUTER_MODEL_CASES = [
+    ("compress my screenshots folder", True),
+    ("what's the tallest mountain in the world", False),
 ]
 
 LOCAL_CODE_NEGATIVE_CASES = [
@@ -147,8 +222,48 @@ def run():
             fails.append(f"_announces_next_action({text!r:.40})")
         print(f"  {'PASS' if ok else 'FAIL'}  announce={got!s:5} (want {exp!s:5})  {text[:46]}")
 
+    print("\nSUCCESS-VERIFIER VERDICT PARSING (agent):")
+    for raw, exp in VERDICT_CASES:
+        got, _reason = _parse_verdict(raw)
+        ok = got == exp
+        if not ok:
+            fails.append(f"_parse_verdict({raw!r:.40})")
+        print(f"  {'PASS' if ok else 'FAIL'}  achieved={got!s:5} (want {exp!s:5})  {raw[:46]!r}")
+
+    print("\nQUERY REFORMULATION FALLBACK (web):")
+    for query, must_have in FILLER_CASES:
+        stripped = _strip_filler(query).lower()
+        ok = all(w in stripped for w in must_have)
+        if not ok:
+            fails.append(f"_strip_filler({query!r:.40})")
+        print(f"  {'PASS' if ok else 'FAIL'}  {stripped!r:48}  {query}")
+
+    print("\nCALENDAR RANGE PARSING (tools):")
+    for phrase, exp in CAL_RANGE_CASES:
+        label, _start, _end = _parse_range(phrase, now=_CAL_NOW)
+        ok = label == exp
+        if not ok:
+            fails.append(f"_parse_range({phrase!r:.30})")
+        print(f"  {'PASS' if ok else 'FAIL'}  {label:11} (want {exp:11})  {phrase!r}")
+
+    print("\nGMAIL QUERY TRANSLATION (tools):")
+    for phrase, must_have in GMAIL_QUERY_CASES:
+        query, _label = _to_gmail_query(phrase)
+        ok = all(s in query for s in must_have)
+        if not ok:
+            fails.append(f"_to_gmail_query({phrase!r:.30})")
+        print(f"  {'PASS' if ok else 'FAIL'}  {query:34} {phrase!r}")
+
     print("\nROUTING (is_complex):")
     for utt, exp in ROUTING_CASES:
+        got = is_complex(utt)
+        ok = got == exp
+        if not ok:
+            fails.append(utt)
+        print(f"  {'PASS' if ok else 'FAIL'}  complex={got!s:5} (want {exp!s:5})  {utt}")
+
+    print("\nROUTER MODEL (no-keyword utterances hit qwen2.5:3b):")
+    for utt, exp in ROUTER_MODEL_CASES:
         got = is_complex(utt)
         ok = got == exp
         if not ok:
@@ -196,8 +311,10 @@ def run():
         got = f"{request.project.name}/{request.files[0].name if request.files else '-'}" if request else "None"
         print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want None)  {utt}")
 
-    total = (len(TOOL_FAILURE_CASES) + len(NEXT_ACTION_CASES) + len(ROUTING_CASES)
-             + len(TOOL_CASES) + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
+    total = (len(TOOL_FAILURE_CASES) + len(NEXT_ACTION_CASES) + len(VERDICT_CASES)
+             + len(FILLER_CASES) + len(CAL_RANGE_CASES) + len(GMAIL_QUERY_CASES)
+             + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
+             + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
              + len(LOCAL_CODE_NEGATIVE_CASES))
     print(f"\n{total - len(fails)}/{total} passed")
     if fails:

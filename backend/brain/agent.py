@@ -12,6 +12,65 @@ from bridge import state_bus
 MAX_ITERATIONS = 10
 MAX_RETRIES_PER_TOOL = 3
 
+# ── Success verification ──────────────────────────────────────────────────────
+# A tool returning no error does NOT prove the GOAL was met: a shell script can
+# run cleanly yet do the wrong thing, a write can land the wrong content, a git
+# commit can succeed while nothing was staged. When the agent declares the goal
+# done AND it took a consequential (state-changing) action, a cheap local judge
+# re-checks that the goal was actually accomplished before we accept completion.
+# Pure read/lookup tools (search_web, read_file) need no such check — their
+# result IS the deliverable. Disable with FRIDAY_VERIFY=0 (e.g. for benchmarks).
+VERIFY_ENABLED = os.getenv("FRIDAY_VERIFY", "1") != "0"
+CONSEQUENTIAL_TOOLS = {"run_shell", "write_file"}
+MAX_VERIFICATION_PUSHBACKS = 1
+VERIFY_SYSTEM = "You are a strict QA verifier for an AI agent. Be terse and literal."
+
+
+def _short_args(args: dict) -> str:
+    return ", ".join(f"{k}={str(v)[:60]}" for k, v in (args or {}).items())
+
+
+def _parse_verdict(raw: str) -> tuple[bool, str]:
+    """Parse a verifier reply into (achieved, reason). Fail-OPEN: anything that
+    isn't an explicit NOT_ACHIEVED counts as achieved, so the verifier can never
+    block a real completion on its own ambiguity or a malformed reply."""
+    text = (raw or "").strip()
+    if "NOT_ACHIEVED" in text.upper().replace(" ", "_"):
+        reason = text.split(":", 1)[1].strip() if ":" in text else text
+        return False, (reason[:300] or "the goal was not fully accomplished")
+    return True, ""
+
+
+def _verify_goal(goal: str, action_log: list) -> tuple[bool, str]:
+    """Cheap local judge: given the goal and the actions actually taken (with
+    their results), was the goal genuinely accomplished? Returns (achieved,
+    reason). Fail-open on any error — verification must never strand the user."""
+    if not action_log:
+        return True, ""
+    try:
+        from brain.llm import ask  # lazy: agent is imported early in the brain
+    except Exception:
+        return True, ""
+
+    steps = "\n".join(
+        f"- {name}({_short_args(args)}) -> {str(result)[:200]}"
+        for name, args, result in action_log
+    )
+    prompt = (
+        f'GOAL: "{goal}"\n\nACTIONS TAKEN (tool -> result):\n{steps}\n\n'
+        "Did these actions ACTUALLY accomplish the goal? Judge the end state, not "
+        "the intent — e.g. a push must have pushed, a written file must contain "
+        "what was asked, a 'commit' with nothing staged did NOT commit. Reply on "
+        "ONE line, exactly one of:\n"
+        "ACHIEVED\n"
+        "NOT_ACHIEVED: <one short reason what is missing>"
+    )
+    try:
+        raw = ask(prompt, system=VERIFY_SYSTEM)
+    except Exception:
+        return True, ""
+    return _parse_verdict(raw)
+
 # Tools that are almost always the FINAL action of a goal. When one succeeds we
 # return its own result message instead of paying another full inference just to
 # phrase a summary. Deliberately excludes chain-starters like open_app (often
@@ -82,23 +141,62 @@ def _announces_next_action(text: str) -> bool:
 
 
 def _tool_status(name: str, args: dict | None = None) -> str:
+    """A short, human, present-progressive line describing what FRIDAY is DOING
+    right now (for the UI status line + console). Reads like an assistant
+    narrating an action — "Reading main.py", "Checking your calendar" — never the
+    internal tool name ("Running get_calendar") or step bookkeeping."""
     args = args or {}
+
     if name == "search_web":
-        return f"Searching: {args.get('query', '')}".strip()
+        q = str(args.get("query", "")).strip()
+        return f"Searching the web for {q}" if q else "Searching the web"
     if name == "read_page":
         return "Reading the page"
     if name == "search_memory":
-        return "Checking memory"
+        return "Searching memory"
     if name == "navigate_browser":
         return "Opening the page"
     if name == "run_shell":
-        command = str(args.get("command", "")).strip()
-        return f"Running: {command[:80]}" if command else "Running command"
+        cmd = str(args.get("command", "")).strip()
+        return f"Running {cmd[:60]}" if cmd else "Running a command"
     if name == "play_media":
         return "Starting playback"
     if name == "get_date_time":
         return "Checking the time"
-    return f"Running {name}"
+    if name == "get_calendar":
+        return "Checking your calendar"
+    if name == "read_email":
+        return "Checking your email"
+    if name == "watch_email":
+        return "Setting up an email alert"
+    if name in ("read_file", "read_project_file"):
+        target = args.get("filename") or os.path.basename(str(args.get("path", "")))
+        return f"Reading {target}" if target else "Reading the file"
+    if name == "write_file":
+        target = os.path.basename(str(args.get("path", "")))
+        return f"Writing {target}" if target else "Writing the file"
+    if name == "find_project":
+        return "Finding the project"
+    if name in ("open_app", "close_app"):
+        verb = "Opening" if name == "open_app" else "Closing"
+        return f"{verb} {args.get('name', 'the app')}"
+    if name == "get_running_apps":
+        return "Checking open apps"
+    if name == "look_at_screen":
+        return "Looking at your screen"
+    if name == "take_screenshot":
+        return "Taking a screenshot"
+    if name == "set_reminder":
+        return "Setting a reminder"
+    if name == "set_timer":
+        return "Setting a timer"
+    if name == "list_reminders":
+        return "Checking your reminders"
+    if name == "cancel_reminder":
+        return "Cancelling that"
+    if name == "set_monitor":
+        return "Setting up a watch"
+    return "Working on it"
 
 # Built once per process. The agent system prompt is static (personality +
 # tools list + cwd), so rebuilding it on every task — and re-deriving the
@@ -195,6 +293,11 @@ async def run_agent(
         "Untracked files",
     ]
 
+    # What the agent actually DID (tool, args, result) and whether any of it was
+    # state-changing — fed to the success verifier when the goal is declared done.
+    action_log: list = []
+    consequential: set = set()
+
     # ── Resuming from confirmation ──────────────────────────────────────
     if resume_state:
         log_system("agent", "Resuming from confirmed command.")
@@ -224,6 +327,11 @@ async def run_agent(
         # The assistant tool_call (run_shell) is already the last assistant turn
         # in `messages`; append its result so the conversation stays well-formed.
         messages.append({"role": "tool", "tool_name": "run_shell", "content": content[:4000]})
+
+        # A confirmed command is always state-changing — log it so the verifier
+        # judges the resumed goal too (this is exactly the silent-failure path).
+        action_log.append(("run_shell", {"command": confirmed_command}, result_str[:200]))
+        consequential.add("run_shell")
 
     # ── Fresh start ─────────────────────────────────────────────────────
     else:
@@ -271,10 +379,14 @@ async def run_agent(
     last_error = ""
     completion_pushbacks = 0
     MAX_COMPLETION_PUSHBACKS = 3
+    verification_pushbacks = 0
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         log_system("agent", f"Iteration {iteration}/{MAX_ITERATIONS}")
-        step_message = "Planning next step..." if iteration == 1 else f"Planning step {iteration}..."
+        # A plain "Thinking..." reads naturally; the specific action shows up a
+        # beat later as the tool fires ("Reading main.py"). Step numbers are
+        # internal bookkeeping and shouldn't leak to the user.
+        step_message = "Thinking..."
         state_bus.set_state("thinking", message=step_message, tool=None)
         status("Agent", step_message)
 
@@ -328,6 +440,31 @@ async def run_agent(
                     ),
                 })
                 continue
+
+            # Success verification: the model thinks it's done and it took a
+            # state-changing action — confirm the goal was ACTUALLY achieved
+            # before we tell the user it's done. Runs at most once (bounded
+            # latency) and fails open, so it only ever catches a real miss.
+            if (VERIFY_ENABLED
+                    and verification_pushbacks < MAX_VERIFICATION_PUSHBACKS
+                    and consequential):
+                state_bus.set_state("thinking", message="Double-checking the result...", tool=None)
+                status("Agent", "verifying the result")
+                achieved, reason = await asyncio.to_thread(_verify_goal, goal, action_log)
+                if not achieved:
+                    verification_pushbacks += 1
+                    log_system("agent", f"Verification FAILED: {reason}")
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"VERIFICATION FAILED: {reason}. The goal is NOT actually "
+                            "complete. Inspect the current state with a tool and finish "
+                            "the job — do not claim it is done until it truly is."
+                        ),
+                    })
+                    last_failed = False  # the step didn't error; the goal is just unmet
+                    continue
+                log_system("agent", "Verification passed.")
 
             log_system("agent", "Goal complete.")
             return {"type": "reply", "content": content or "Done Sir."}
@@ -395,6 +532,14 @@ async def run_agent(
             }
 
         is_error = _tool_failed(tool_result)
+
+        # Record what was done for the end-of-goal verifier. Only successful,
+        # state-changing actions arm verification — a failed step is already
+        # handled by the retry/pushback paths, and reads never need it.
+        if not is_error:
+            action_log.append((tool_name, tool_args, str(tool_result)[:200]))
+            if tool_name in CONSEQUENTIAL_TOOLS:
+                consequential.add(tool_name)
 
         last_failed = is_error
         last_error = str(tool_result) if is_error else ""

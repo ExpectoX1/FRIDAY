@@ -424,6 +424,21 @@ SIMPLE_SIGNALS = [
     "what's up", "thank you", "thanks", "good morning", "good afternoon",
     "good evening", "good night", "tell me a joke", "who are you",
     "what other functionality",
+    # Calendar reads are a single get_calendar call — keep them single-shot.
+    "my calendar", "my schedule", "my agenda", "any meetings",
+    "meetings today", "meetings tomorrow", "on my calendar",
+    "what's on today", "what's on tomorrow", "whats on my",
+    # News / info lookups are a single search → summarize. They MUST stay
+    # single-shot so the dedicated, concise spoken-answer summarizer handles
+    # them; the agent loop free-forms and dumps the raw scrape as a markdown
+    # document (it narrated a Reuters homepage instead of reading the news).
+    "the news", "world news", "latest news", "news from", "news around",
+    "news today", "the headlines", "headlines", "what's happening in the world",
+    "whats happening in the world", "what's going on in the world",
+    # Gmail reads are a single read_email call — keep them single-shot.
+    "my email", "my emails", "my inbox", "my mail", "check my email",
+    "check my mail", "read my email", "read my mail", "any new mail",
+    "any unread", "emails from", "new mail", "any important email",
 ]
 
 # Proactive single tool calls (reminders, timers, monitors). Checked BEFORE
@@ -439,6 +454,44 @@ REMINDER_SIGNALS = [
     "let me know if", "notify me when", "alert me when", "watch for",
     "tell me when", "stop watching", "stop monitoring",
     "tweets", "tweet", "on twitter", " on x ", "posts on x",
+    # Email watchers are a single watch_email call (proactive), not the agent.
+    "watch my email", "watch my inbox", "watch my mail", "alert me about",
+]
+
+
+# The router only runs for utterances with NO keyword signal — the genuinely
+# ambiguous middle. A 3b model is reliable there only if it's shown the decision
+# boundary, so we give it a terse rubric plus hard few-shot examples (the cases
+# that actually flaked in testing) and decode at temperature 0. This is the
+# whole router-reliability fix: better priors + determinism, not more keywords.
+_ROUTER_SYSTEM = (
+    "You route a voice assistant's request to one of two execution paths. "
+    "Reply ONLY with the JSON classification.\n"
+    "SIMPLE = can be done in ONE action or is pure conversation: open/close an "
+    "app, play a named song/show, the date/time, a fact or chit-chat question "
+    "(even if it needs one web lookup).\n"
+    "COMPLEX = needs MULTIPLE steps or search-then-act: find-then-play a video, "
+    "batch file work (sort/organize/rename/clean a folder), git (commit/push/"
+    "deploy), writing/running a script, or researching and comparing.\n"
+    "When the request implies discovering something first and THEN acting on it, "
+    "it is COMPLEX."
+)
+
+_ROUTER_FEWSHOT = [
+    {"role": "user", "content": "what's the weather like tomorrow"},
+    {"role": "assistant", "content": '{"classification": "SIMPLE"}'},
+    {"role": "user", "content": "put together a summary of what's in my downloads folder"},
+    {"role": "assistant", "content": '{"classification": "COMPLEX"}'},
+    {"role": "user", "content": "grab the newest markaroni upload and put it on"},
+    {"role": "assistant", "content": '{"classification": "COMPLEX"}'},
+    {"role": "user", "content": "who won the match last night"},
+    {"role": "assistant", "content": '{"classification": "SIMPLE"}'},
+    {"role": "user", "content": "get me the latest news from around the world"},
+    {"role": "assistant", "content": '{"classification": "SIMPLE"}'},
+    {"role": "user", "content": "back up my notes folder and zip it"},
+    {"role": "assistant", "content": '{"classification": "COMPLEX"}'},
+    {"role": "user", "content": "what's the capital of portugal"},
+    {"role": "assistant", "content": '{"classification": "SIMPLE"}'},
 ]
 
 
@@ -467,17 +520,9 @@ def is_complex(message: str) -> bool:
     try:
         response = ollama.chat(
             model=ROUTER_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a routing assistant. Classify the user's request as either 'SIMPLE' or 'COMPLEX'.\n"
-                        "- 'SIMPLE': Single-step requests. Opening/closing an app, playing a specific song/movie on Spotify/Netflix directly, asking for date/time, simple questions, simple chit-chat.\n"
-                        "- 'COMPLEX': Multi-step requests. Finding and playing a YouTube video (requires searching first), batch file operations (sorting, organizing, cleaning), git tasks (commit, push), command chaining, scripting, research."
-                    ),
-                },
-                {"role": "user", "content": message},
-            ],
+            messages=[{"role": "system", "content": _ROUTER_SYSTEM}]
+            + _ROUTER_FEWSHOT
+            + [{"role": "user", "content": message}],
             format={
                 "type": "object",
                 "properties": {
@@ -486,6 +531,10 @@ def is_complex(message: str) -> bool:
                 "required": ["classification"],
             },
             keep_alive=KEEP_ALIVE,
+            # temperature 0 makes the 3b classifier deterministic — the same
+            # utterance always routes the same way, killing the run-to-run
+            # flakiness where a borderline request sometimes dropped to SIMPLE.
+            options={"temperature": 0},
         )
         data = json.loads(response.message.content.strip())
         return data.get("classification") == "COMPLEX"

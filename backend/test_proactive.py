@@ -169,6 +169,40 @@ def test_web_monitor():
     return fails
 
 
+def test_mail_monitor():
+    """Mail monitor primes silently, announces each NEW message once, and never
+    re-announces a seen one. No account, no network (fetch is stubbed)."""
+    from proactive.mail_monitor import check_mail_monitor
+
+    fails = []
+    inbox = {"mails": [{"id": "<a@x>", "sender": "Priya", "subject": "Lunch?"}]}
+
+    def fetch_fn(_criteria):
+        return inbox["mails"]
+
+    t = Trigger(message="watch email: starred", fire_at=0, kind="mail_monitor",
+                state={"criteria": "is:starred", "label": "starred", "seen": [], "primed": False})
+
+    # 1st poll primes the baseline — existing mail is NOT announced.
+    if check_mail_monitor(t, fetch_fn) is not None:
+        fails.append("mail monitor announced the existing inbox on priming")
+
+    # No new mail -> silent.
+    if check_mail_monitor(t, fetch_fn) is not None:
+        fails.append("mail monitor spoke with no new mail")
+
+    # New mail arrives -> one alert naming the sender.
+    inbox["mails"] = [{"id": "<b@x>", "sender": "Boss", "subject": "Q3 numbers"}] + inbox["mails"]
+    alert = check_mail_monitor(t, fetch_fn)
+    if not alert or "Boss" not in alert or "Q3 numbers" not in alert:
+        fails.append(f"mail monitor did not announce the new mail: {alert!r}")
+
+    # Same inbox again -> already seen -> silent.
+    if check_mail_monitor(t, fetch_fn) is not None:
+        fails.append("mail monitor re-announced an already-seen mail")
+    return fails
+
+
 def run():
     all_fails = []
     for name, fn in [
@@ -177,6 +211,7 @@ def run():
         ("persistence", test_scheduler_persistence),
         ("recurring", test_recurring_reschedules),
         ("web monitor", test_web_monitor),
+        ("mail monitor", test_mail_monitor),
     ]:
         fails = fn()
         status = "PASS" if not fails else "FAIL"
