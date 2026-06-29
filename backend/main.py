@@ -11,7 +11,7 @@ import sounddevice as sd
 from voice.stt import listen, transcribe, rms, _input_device, SAMPLE_RATE, BLOCK_DURATION
 from voice.tts import generate, play, generate_stream
 from brain.llm import chat, chat_stream, is_complex
-from brain.agent import run_agent
+from brain.agent import run_agent, _tool_status
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
 from logger import *
@@ -43,6 +43,9 @@ friday_done.set()
 BARGE_IN = os.getenv("FRIDAY_BARGE_IN", "0") == "1"
 BARGE_THRESHOLD = float(os.getenv("FRIDAY_BARGE_THRESHOLD", "0.06"))
 BARGE_BLOCKS = max(2, int(0.5 / BLOCK_DURATION))  # ~0.5s sustained loud input
+# FRIDAY_BARGE_DEBUG=1 logs the live mic level vs threshold while she speaks, so
+# you can see whether your voice clears the bar (tune) or the monitor never runs.
+BARGE_DEBUG = os.getenv("FRIDAY_BARGE_DEBUG", "0") == "1"
 interrupt_event = threading.Event()
 
 LLM_INTERPRET = {"search_memory", "search_web", "read_page", "read_file", "read_project_file"}
@@ -61,23 +64,6 @@ AGENT_ACK_PHRASES = [
     "Right away, Sir.",
 ]
 
-
-def _tool_status(name: str, args: dict | None = None) -> str:
-    args = args or {}
-    if name == "search_web":
-        return f"Searching: {args.get('query', '')}".strip()
-    if name == "read_page":
-        return "Reading the page"
-    if name == "search_memory":
-        return "Checking memory"
-    if name == "navigate_browser":
-        return "Opening the page"
-    if name == "run_shell":
-        command = str(args.get("command", "")).strip()
-        return f"Running: {command[:80]}" if command else "Running command"
-    if name == "play_media":
-        return "Starting playback"
-    return f"Running {name}"
 
 # Quiet latency fillers. These are not answers; they are short, human-feeling
 # cues used only when the model/tool path is taking long enough that silence
@@ -306,17 +292,29 @@ def barge_in_monitor():
                 blocksize=block, device=_input_device(),
             )
             stream.start()
-        except Exception:
+        except Exception as e:
+            if BARGE_DEBUG:
+                status("Barge", f"mic stream failed to open: {e}")
             time.sleep(0.2)
             continue
         threshold = _effective_barge_threshold()  # scaled to current volume
+        if BARGE_DEBUG:
+            status("Barge", f"monitoring — speak to interrupt (threshold {threshold:.3f})")
         loud = 0
+        peak = 0.0
+        last_log = time.time()
         while is_speaking.is_set():
             try:
                 chunk, _ = stream.read(block)
             except Exception:
                 break
-            if rms(chunk.flatten()) > threshold:
+            level = rms(chunk.flatten())
+            if BARGE_DEBUG:
+                peak = max(peak, level)
+                if time.time() - last_log >= 1.0:
+                    status("Barge", f"mic level peak {peak:.3f} / threshold {threshold:.3f}")
+                    peak, last_log = 0.0, time.time()
+            if level > threshold:
                 loud += 1
                 if loud >= BARGE_BLOCKS:
                     log_system("main", "Barge-in — stopping playback to listen.")
@@ -631,7 +629,7 @@ async def assistant_loop():
         # Fresh turn — clear any prior interrupt so the workers aren't gated.
         interrupt_event.clear()
 
-        state_bus.set_state("listening", message="Listening...", tool=None, replyPreview="")
+        state_bus.set_state("listening", message="Listening...", tool=None, replyPreview="", streamingReply="")
         status("Listening")
         # Listen on the mic, but bail early if a typed command arrives OR if she
         # starts speaking (a queued/proactive line) — never record her own voice.
@@ -700,8 +698,14 @@ async def assistant_loop():
             if code_context.is_followup(text):
                 use_cloud = code_context.should_use_cloud(text)
                 log_system("main", f"Code follow-up ({'cloud' if use_cloud else 'local'} brain).")
-                state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
-                answer, _ = await asyncio.to_thread(code_context.answer_followup, text)
+                if use_cloud:
+                    state_bus.set_brain("cloud")
+                try:
+                    state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+                    answer, _ = await asyncio.to_thread(code_context.answer_followup, text)
+                finally:
+                    if use_cloud:
+                        state_bus.set_brain(None)  # restore configured default
                 status("FRIDAY", answer)
                 deliver_reply(answer, enqueue_speech)
                 asyncio.create_task(store(f"User: {text}"))
@@ -710,8 +714,8 @@ async def assistant_loop():
             complex_request = await asyncio.to_thread(is_complex, text)
             if complex_request:
                 log_system("main", "Routing to agent loop.")
-                state_bus.set_state("thinking", message="Planning steps...", transcript=text, tool=None)
-                status("Agent", "planning steps")
+                state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+                status("Agent", "Thinking...")
                 # Immediate audible ack so the user isn't met with silence while the
                 # multi-step loop runs. If a latency cue already spoke, don't stack
                 # another short acknowledgement on top of it.
@@ -733,11 +737,16 @@ async def assistant_loop():
                 response = None
                 sentence_buffer = ""
                 full_reply = ""
+                streamed = False  # did we already print tokens to the terminal?
 
                 def run_chat_stream():
-                    nonlocal response, sentence_buffer, full_reply
+                    nonlocal response, sentence_buffer, full_reply, streamed
                     for event_type, data in chat_stream(text):
                         if event_type == "token":
+                            if not streamed:
+                                print("FRIDAY: ", end="", flush=True)
+                                streamed = True
+                            print(data, end="", flush=True)   # live token stream → terminal
                             full_reply += data
                             sentence_buffer += data
                             parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
@@ -746,6 +755,13 @@ async def assistant_loop():
                                     if part.strip():
                                         enqueue_speech(part.strip())
                                 sentence_buffer = parts[-1]
+                            # Stream the growing reply to the UI. replyPreview (one
+                            # line, capped) feeds the island; streamingReply (full
+                            # text) feeds the window's live bubble. Set LAST so they
+                            # win over enqueue_speech's per-sentence replyPreview.
+                            state_bus.set_state(
+                                replyPreview=full_reply[:200], streamingReply=full_reply
+                            )
                         elif event_type == "tool":
                             name, args = data
                             response = {"type": "tool", "name": name, "args": args}
@@ -754,6 +770,9 @@ async def assistant_loop():
 
                 await asyncio.to_thread(run_chat_stream)
 
+                if streamed:
+                    print(flush=True)  # close the streamed line
+
                 # Enqueue any remaining text in the buffer if it was a reply
                 if not response or response.get("type") == "reply":
                     if sentence_buffer.strip():
@@ -761,10 +780,15 @@ async def assistant_loop():
                     content = (response or {}).get("content") or full_reply
                     log_response(response or {"type": "reply", "content": content})
                     if content.strip():
-                        status("FRIDAY", content.strip())
-                        # Voice already streamed; just publish the bubble for the window.
+                        if not streamed:  # tool/other path didn't stream — print once
+                            status("FRIDAY", content.strip())
+                        # Stop the live stream first, then publish the final bubble —
+                        # the window swaps its transient streaming bubble for this one.
+                        state_bus.set_state(streamingReply="")
                         state_bus.publish_activity("assistant_message", content.strip())
                 else:
+                    if streamed:  # streamed partial content before a tool call — clear it
+                        state_bus.set_state(streamingReply="")
                     log_response(response)
                     await handle_response(response)
         finally:
@@ -834,6 +858,8 @@ if __name__ == "__main__":
     player_thread.start()
     barge_thread.start()
     bridge_thread.start()
+    status("Barge-in", f"{'ENABLED' if BARGE_IN else 'DISABLED'} "
+                        f"(threshold {BARGE_THRESHOLD}, debug {'on' if BARGE_DEBUG else 'off'})")
 
     # Proactive layer: fire pending reminders/timers through the TTS pipeline.
     # init() loads persisted triggers; start() spins the background scheduler

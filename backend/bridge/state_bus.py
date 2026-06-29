@@ -18,11 +18,18 @@ Contract (one factual event; the Swift UI maps it to expressions/moods):
 """
 import collections
 import copy
+import os
 import threading
 import time
 import uuid
 
 _lock = threading.Lock()
+
+# "cloud" when the brain is routed to Groq (FRIDAY_BRAIN=cloud), else "local".
+# Mirrors brain.llm.BACKEND without importing it (state_bus is a leaf module).
+# The per-request cloud routing for deep code follow-ups flips this transiently
+# via set_brain() and restores it after the turn.
+DEFAULT_BRAIN = "cloud" if os.getenv("FRIDAY_BRAIN", "ollama").lower() == "cloud" else "local"
 
 _state = {
     "state": "idle",
@@ -33,6 +40,12 @@ _state = {
     "tool": None,
     "requiresApproval": False,
     "pendingCommand": None,
+    "brain": DEFAULT_BRAIN,
+    # The assistant's reply so far, updated token-by-token while generating, ""
+    # when idle. Lets the UI render a live streaming bubble; the final text still
+    # arrives as an `assistant_message` activity. Additive field — old clients
+    # ignore it. See bridge/README.md.
+    "streamingReply": "",
 }
 
 # Structured activity timeline for the coding window. Each broadcast carries the
@@ -62,6 +75,13 @@ def set_state(state: str | None = None, **fields) -> None:
         snapshot = copy.deepcopy(_state)
         snapshot["activity"] = []  # state-only update — no new activity events
     _broadcast(snapshot)
+
+
+def set_brain(brain: str | None) -> None:
+    """Flip which brain is active ('cloud'/'local') and broadcast it. Pass None to
+    restore the configured default. Used so the UI can show a 'Cloud' indicator
+    while a deep code follow-up is routed to Groq even on a local-default setup."""
+    set_state(brain=brain or DEFAULT_BRAIN)
 
 
 def publish_activity(kind: str, text: str = "", *, state: str | None = None,

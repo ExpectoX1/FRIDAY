@@ -18,7 +18,9 @@ The event is **factual**; the Swift UI maps it to expressions/moods.
   "replyPreview": "On it, Sir.",
   "tool": null,
   "requiresApproval": false,
-  "pendingCommand": null
+  "pendingCommand": null,
+  "brain": "local",
+  "streamingReply": ""
 }
 ```
 
@@ -28,6 +30,15 @@ speaking | approval_required | error`
 `tool` = tool name during `tool_running` (else null).
 `replyPreview` = text being spoken (during `speaking`).
 During `approval_required`: `requiresApproval=true`, `pendingCommand` = the command.
+`brain` ∈ `local | cloud` — which brain is handling the turn. `cloud` when
+`FRIDAY_BRAIN=cloud` (whole brain on Groq) or while a deep code follow-up is
+transiently routed to the cloud. The UI shows a "Cloud" badge when `cloud`.
+`streamingReply` = the assistant's reply SO FAR, updated token-by-token while a
+reply is generating, `""` when idle. Lets the UI render a live streaming bubble.
+On completion the backend clears it to `""` and sends the full text as an
+`assistant_message` activity, so the persisted bubble is unchanged. Additive —
+old clients ignore it. (Currently emitted for single-shot conversational replies;
+tool-summarized and agent replies still arrive only as the final activity.)
 
 ## HTTP
 - `GET  /api/health` → `{"status":"ok","state":"idle"}`
