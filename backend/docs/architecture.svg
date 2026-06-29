@@ -1,0 +1,98 @@
+<svg width="100%" viewBox="0 0 680 800" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>FRIDAY backend architecture</title>
+<desc>Layered wire diagram: voice I/O feeds main.py, which routes to the brain (single-shot or agent loop) over Ollama/Groq, dispatches tools via the registry, and connects to infra and external services, plus a bridge to the SwiftUI frontend.</desc>
+<style>
+  text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .t  { font-size: 14px; font-weight: 500; }
+  .ts { font-size: 12px; font-weight: 400; }
+  .th { font-size: 14px; font-weight: 500; fill: #2C2C2A; }
+  .lbl { fill: #2C2C2A; }
+  rect.bg { fill: #ffffff; }
+  .c-purple rect { fill: #EEEDFE; stroke: #7F77DD; }
+  .c-purple text { fill: #26215C; }
+  .c-teal rect { fill: #E1F5EE; stroke: #1D9E75; }
+  .c-teal text { fill: #04342C; }
+  .c-amber rect { fill: #FAEEDA; stroke: #BA7517; }
+  .c-amber text { fill: #412402; }
+  .c-gray rect { fill: #F1EFE8; stroke: #888780; }
+  .c-gray text { fill: #2C2C2A; }
+  .edge { stroke: #5F5E5A; stroke-width: 1.5; fill: none; }
+</style>
+<defs>
+<marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5F5E5A"/></marker>
+</defs>
+<rect class="bg" x="0" y="0" width="680" height="800"/>
+
+<g class="c-purple"><rect x="44" y="14" width="12" height="12" rx="3"/></g><text class="ts lbl" x="62" y="24">brain</text>
+<g class="c-teal"><rect x="150" y="14" width="12" height="12" rx="3"/></g><text class="ts lbl" x="168" y="24">tools</text>
+<g class="c-amber"><rect x="240" y="14" width="12" height="12" rx="3"/></g><text class="ts lbl" x="258" y="24">infra &amp; external</text>
+<g class="c-gray"><rect x="420" y="14" width="12" height="12" rx="3"/></g><text class="ts lbl" x="438" y="24">I/O &amp; orchestration</text>
+
+<text class="th" x="44" y="58">Voice I/O</text>
+<g class="c-gray"><rect x="44" y="66" width="96" height="46" rx="8"/><text class="t" x="92" y="84" text-anchor="middle" dominant-baseline="central">Mic</text><text class="ts" x="92" y="100" text-anchor="middle" dominant-baseline="central">audio in</text></g>
+<g class="c-gray"><rect x="160" y="66" width="180" height="46" rx="8"/><text class="t" x="250" y="84" text-anchor="middle" dominant-baseline="central">voice/stt.py</text><text class="ts" x="250" y="100" text-anchor="middle" dominant-baseline="central">faster-whisper</text></g>
+<g class="c-gray"><rect x="372" y="66" width="180" height="46" rx="8"/><text class="t" x="462" y="84" text-anchor="middle" dominant-baseline="central">voice/tts.py</text><text class="ts" x="462" y="100" text-anchor="middle" dominant-baseline="central">Kokoro, streamed</text></g>
+<g class="c-gray"><rect x="568" y="66" width="72" height="46" rx="8"/><text class="t" x="604" y="89" text-anchor="middle" dominant-baseline="central">Speaker</text></g>
+<line class="edge" x1="140" y1="89" x2="158" y2="89" marker-end="url(#ah)"/>
+<line class="edge" x1="552" y1="89" x2="566" y2="89" marker-end="url(#ah)"/>
+
+<text class="th" x="44" y="130">Orchestration</text>
+<g class="c-gray"><rect x="44" y="138" width="250" height="56" rx="8"/><text class="t" x="169" y="159" text-anchor="middle" dominant-baseline="central">main.py</text><text class="ts" x="169" y="177" text-anchor="middle" dominant-baseline="central">async voice loop</text></g>
+<g class="c-amber"><rect x="314" y="138" width="150" height="56" rx="8"/><text class="t" x="389" y="159" text-anchor="middle" dominant-baseline="central">bridge/state_bus</text><text class="ts" x="389" y="177" text-anchor="middle" dominant-baseline="central">state + activity</text></g>
+<g class="c-amber"><rect x="480" y="138" width="160" height="56" rx="8"/><text class="t" x="560" y="159" text-anchor="middle" dominant-baseline="central">bridge/server</text><text class="ts" x="560" y="177" text-anchor="middle" dominant-baseline="central">:8767 WS + REST</text></g>
+<g class="c-gray"><rect x="480" y="206" width="160" height="40" rx="8"/><text class="t" x="560" y="226" text-anchor="middle" dominant-baseline="central">SwiftUI Island</text></g>
+<line class="edge" x1="250" y1="112" x2="180" y2="136" marker-end="url(#ah)"/>
+<line class="edge" x1="262" y1="136" x2="448" y2="113" marker-end="url(#ah)"/>
+<text class="ts lbl" x="372" y="128" text-anchor="middle">reply</text>
+<line class="edge" x1="294" y1="164" x2="312" y2="164" marker-end="url(#ah)"/>
+<line class="edge" x1="464" y1="164" x2="478" y2="164" marker-end="url(#ah)"/>
+<line class="edge" x1="560" y1="194" x2="560" y2="204" marker-end="url(#ah)"/>
+
+<text class="th" x="44" y="266">Routing</text>
+<g class="c-purple"><rect x="200" y="276" width="280" height="46" rx="8"/><text class="t" x="340" y="294" text-anchor="middle" dominant-baseline="central">is_complex()</text><text class="ts" x="340" y="310" text-anchor="middle" dominant-baseline="central">qwen2.5:3b router</text></g>
+<line class="edge" x1="150" y1="194" x2="290" y2="274" marker-end="url(#ah)"/>
+
+<text class="th" x="44" y="344">Brain</text>
+<g class="c-purple"><rect x="44" y="354" width="180" height="50" rx="8"/><text class="t" x="134" y="373" text-anchor="middle" dominant-baseline="central">chat()</text><text class="ts" x="134" y="391" text-anchor="middle" dominant-baseline="central">single-shot + tools</text></g>
+<g class="c-purple"><rect x="244" y="354" width="190" height="50" rx="8"/><text class="t" x="339" y="373" text-anchor="middle" dominant-baseline="central">run_agent()</text><text class="ts" x="339" y="391" text-anchor="middle" dominant-baseline="central">multi-step + verify</text></g>
+<g class="c-purple"><rect x="454" y="354" width="186" height="50" rx="8"/><text class="t" x="547" y="373" text-anchor="middle" dominant-baseline="central">code_context</text><text class="ts" x="547" y="391" text-anchor="middle" dominant-baseline="central">code follow-ups</text></g>
+<line class="edge" x1="320" y1="322" x2="160" y2="352" marker-end="url(#ah)"/>
+<text class="ts lbl" x="205" y="340" text-anchor="middle">simple</text>
+<line class="edge" x1="345" y1="322" x2="345" y2="352" marker-end="url(#ah)"/>
+<text class="ts lbl" x="392" y="340" text-anchor="middle">complex</text>
+
+<g class="c-purple"><rect x="44" y="414" width="120" height="54" rx="8"/><text class="t" x="104" y="434" text-anchor="middle" dominant-baseline="central">personality</text><text class="ts" x="104" y="452" text-anchor="middle" dominant-baseline="central">prompt</text></g>
+<g class="c-purple"><rect x="180" y="414" width="210" height="54" rx="8"/><text class="t" x="285" y="434" text-anchor="middle" dominant-baseline="central">brain/llm.py</text><text class="ts" x="285" y="452" text-anchor="middle" dominant-baseline="central">_call_brain</text></g>
+<g class="c-amber"><rect x="406" y="414" width="234" height="54" rx="8"/><text class="t" x="523" y="434" text-anchor="middle" dominant-baseline="central">Ollama / Groq</text><text class="ts" x="523" y="452" text-anchor="middle" dominant-baseline="central">local + cloud LLMs</text></g>
+<line class="edge" x1="134" y1="404" x2="220" y2="412" marker-end="url(#ah)"/>
+<line class="edge" x1="339" y1="404" x2="300" y2="412" marker-end="url(#ah)"/>
+<line class="edge" x1="547" y1="404" x2="360" y2="412" marker-end="url(#ah)"/>
+<line class="edge" x1="164" y1="441" x2="178" y2="441" marker-end="url(#ah)"/>
+<line class="edge" x1="390" y1="441" x2="404" y2="441" marker-end="url(#ah)"/>
+
+<text class="th" x="44" y="492">Tools</text>
+<g class="c-teal"><rect x="210" y="502" width="220" height="44" rx="8"/><text class="t" x="320" y="518" text-anchor="middle" dominant-baseline="central">tools/registry.py</text><text class="ts" x="320" y="534" text-anchor="middle" dominant-baseline="central">native tool schema</text></g>
+<line class="edge" x1="285" y1="468" x2="312" y2="500" marker-end="url(#ah)"/>
+<text class="ts lbl" x="262" y="488" text-anchor="middle">tool call</text>
+
+<g class="c-teal"><rect x="44" y="560" width="140" height="44" rx="8"/><text class="t" x="114" y="576" text-anchor="middle" dominant-baseline="central">web search</text><text class="ts" x="114" y="592" text-anchor="middle" dominant-baseline="central">+ read_page</text></g>
+<g class="c-teal"><rect x="196" y="560" width="140" height="44" rx="8"/><text class="t" x="266" y="576" text-anchor="middle" dominant-baseline="central">apps / media</text><text class="ts" x="266" y="592" text-anchor="middle" dominant-baseline="central">open · play</text></g>
+<g class="c-teal"><rect x="348" y="560" width="140" height="44" rx="8"/><text class="t" x="418" y="576" text-anchor="middle" dominant-baseline="central">mac / vision</text><text class="ts" x="418" y="592" text-anchor="middle" dominant-baseline="central">AX · screen</text></g>
+<g class="c-teal"><rect x="500" y="560" width="140" height="44" rx="8"/><text class="t" x="570" y="576" text-anchor="middle" dominant-baseline="central">date / time</text><text class="ts" x="570" y="592" text-anchor="middle" dominant-baseline="central">clock</text></g>
+<g class="c-teal"><rect x="44" y="614" width="140" height="44" rx="8"/><text class="t" x="114" y="630" text-anchor="middle" dominant-baseline="central">run_shell</text><text class="ts" x="114" y="646" text-anchor="middle" dominant-baseline="central">shell cmds</text></g>
+<g class="c-teal"><rect x="196" y="614" width="140" height="44" rx="8"/><text class="t" x="266" y="630" text-anchor="middle" dominant-baseline="central">search_memory</text><text class="ts" x="266" y="646" text-anchor="middle" dominant-baseline="central">recall</text></g>
+<g class="c-teal"><rect x="348" y="614" width="140" height="44" rx="8"/><text class="t" x="418" y="630" text-anchor="middle" dominant-baseline="central">reminders</text><text class="ts" x="418" y="646" text-anchor="middle" dominant-baseline="central">+ monitor</text></g>
+<g class="c-teal"><rect x="500" y="614" width="140" height="44" rx="8"/><text class="t" x="570" y="630" text-anchor="middle" dominant-baseline="central">files / projects</text><text class="ts" x="570" y="646" text-anchor="middle" dominant-baseline="central">read · write</text></g>
+<line class="edge" x1="320" y1="546" x2="300" y2="558" marker-end="url(#ah)"/>
+<text class="ts lbl" x="356" y="554" text-anchor="middle">dispatch</text>
+
+<text class="th" x="44" y="688">Infra &amp; external</text>
+<g class="c-amber"><rect x="44" y="698" width="108" height="54" rx="8"/><text class="t" x="98" y="718" text-anchor="middle" dominant-baseline="central">sandbox</text><text class="ts" x="98" y="736" text-anchor="middle" dominant-baseline="central">RISKY gate</text></g>
+<g class="c-amber"><rect x="164" y="698" width="108" height="54" rx="8"/><text class="t" x="218" y="718" text-anchor="middle" dominant-baseline="central">memory</text><text class="ts" x="218" y="736" text-anchor="middle" dominant-baseline="central">Neo4j graph</text></g>
+<g class="c-amber"><rect x="284" y="698" width="108" height="54" rx="8"/><text class="t" x="338" y="718" text-anchor="middle" dominant-baseline="central">proactive</text><text class="ts" x="338" y="736" text-anchor="middle" dominant-baseline="central">scheduler</text></g>
+<g class="c-amber"><rect x="404" y="698" width="108" height="54" rx="8"/><text class="t" x="458" y="718" text-anchor="middle" dominant-baseline="central">Tavily</text><text class="ts" x="458" y="736" text-anchor="middle" dominant-baseline="central">web API</text></g>
+<g class="c-amber"><rect x="524" y="698" width="108" height="54" rx="8"/><text class="t" x="578" y="718" text-anchor="middle" dominant-baseline="central">macOS</text><text class="ts" x="578" y="736" text-anchor="middle" dominant-baseline="central">AppleScript</text></g>
+<line class="edge" x1="114" y1="658" x2="100" y2="696" marker-end="url(#ah)"/>
+<line class="edge" x1="266" y1="658" x2="222" y2="696" marker-end="url(#ah)"/>
+<line class="edge" x1="418" y1="658" x2="344" y2="696" marker-end="url(#ah)"/>
+</svg>
