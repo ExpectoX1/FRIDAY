@@ -203,6 +203,170 @@ def test_mail_monitor():
     return fails
 
 
+def test_clipboard_monitor():
+    """Clipboard monitor primes silently, fires once per NEW useful copy, stays
+    silent on unchanged or non-useful (secret/trivial) content. Signature stubbed."""
+    from proactive.clipboard_monitor import check_clipboard_monitor
+
+    fails = []
+    clip = {"sig": ("h0", None, None)}  # whatever's already copied at startup
+
+    def sig_fn():
+        return clip["sig"]
+
+    t = Trigger(message="clipboard watch", fire_at=0, kind="clipboard_monitor",
+                state={"last_hash": "", "primed": False})
+
+    # 1st poll primes the baseline — never fire on existing clipboard.
+    if check_clipboard_monitor(t, sig_fn) is not None:
+        fails.append("clipboard monitor fired on its priming poll")
+
+    # New, useful copy -> offer spoken once.
+    clip["sig"] = ("h1", "error", "Sir, that looks like an error trace — want me to take a look?")
+    offer = check_clipboard_monitor(t, sig_fn)
+    if not offer or "error trace" not in offer:
+        fails.append(f"clipboard monitor did not offer on new useful content: {offer!r}")
+
+    # Same clipboard again -> unchanged -> silent.
+    if check_clipboard_monitor(t, sig_fn) is not None:
+        fails.append("clipboard monitor re-fired on unchanged clipboard")
+
+    # New copy but not useful (secret/trivial -> category None) -> silent.
+    clip["sig"] = ("h2", None, None)
+    if check_clipboard_monitor(t, sig_fn) is not None:
+        fails.append("clipboard monitor fired on non-useful content")
+    return fails
+
+
+def test_notification_monitor():
+    """Notification monitor baselines to the current high-water rec_id (never
+    announces the existing backlog), then announces only NEW notifications from
+    watched sources, deduped by rec_id. DB/FDA stubbed via injected fns."""
+    from proactive.notification_monitor import check_notification_monitor
+
+    fails = []
+    state = {"max": 100, "new": []}  # what the fake DB reports
+
+    def max_fn():
+        return state["max"]
+
+    def fetch_fn(after):
+        items = [n for n in state["new"] if n["rec_id"] > after]
+        new_max = max([after] + [n["rec_id"] for n in items])
+        return new_max, items
+
+    t = Trigger(message="notification watch", fire_at=0, kind="notification_monitor",
+                state={"sources": ["whatsapp", "instagram"], "last_rec_id": 0, "primed": False})
+
+    # 1st poll primes to current max (100) — silent, ignores the backlog.
+    if check_notification_monitor(t, fetch_fn, max_fn) is not None:
+        fails.append("notification monitor announced the backlog on priming")
+    if t.state["last_rec_id"] != 100:
+        fails.append("notification monitor did not baseline to current max rec_id")
+
+    # New WhatsApp message arrives -> announced once, naming the sender.
+    state["new"] = [{"rec_id": 101, "bundle": "net.whatsapp.WhatsApp",
+                     "title": "Mom", "body": "call me", "subtitle": "", "iden": ""}]
+    alert = check_notification_monitor(t, fetch_fn, max_fn)
+    if not alert or "Mom" not in alert or "WhatsApp" not in alert:
+        fails.append(f"notification monitor did not announce new WhatsApp message: {alert!r}")
+
+    # Same state -> already past that rec_id -> silent.
+    if check_notification_monitor(t, fetch_fn, max_fn) is not None:
+        fails.append("notification monitor re-announced an already-seen message")
+
+    # New but non-watched source (a Myntra deal via Chrome) -> silent.
+    state["new"] = [{"rec_id": 102, "bundle": "com.google.Chrome",
+                     "title": "Shop deals", "body": "50% off", "subtitle": "myntra.com", "iden": ""}]
+    if check_notification_monitor(t, fetch_fn, max_fn) is not None:
+        fails.append("notification monitor announced an unwatched source")
+    return fails
+
+
+def test_briefing():
+    """Briefing weaves only the available sections (calendar/mail/reminders) onto
+    the greeting, degrades to a clean 'clear start' line when nothing's available,
+    and scheduling registers a recurring 'briefing' trigger. Sections + scheduler
+    are stubbed so there's no Calendar/IMAP access or real reminders.json write."""
+    import tools.briefing as briefing
+    import tools.briefing_tool as briefing_tool
+
+    fails = []
+
+    # Compose: greeting + whatever sections return text (None ones dropped).
+    orig = (briefing._calendar_section, briefing._mail_section, briefing._reminders_section)
+    briefing._calendar_section = lambda: "You have 2 things on today: standup at 10 AM, review at 4 PM."
+    briefing._mail_section = lambda: "5 unread emails, the most recent from Priya."
+    briefing._reminders_section = lambda: None
+    try:
+        out = briefing.build_briefing()
+        if "Good " not in out or "Sir" not in out:
+            fails.append(f"briefing missing greeting: {out!r}")
+        if "standup at 10 AM" not in out or "Priya" not in out:
+            fails.append(f"briefing dropped an available section: {out!r}")
+        if "reminders today" in out:
+            fails.append("briefing invented a reminders line when that section was empty")
+
+        # Nothing available -> a graceful clear-start line, never empty.
+        briefing._calendar_section = lambda: None
+        briefing._mail_section = lambda: None
+        briefing._reminders_section = lambda: None
+        out2 = briefing.build_briefing()
+        if "clear start" not in out2.lower():
+            fails.append(f"empty briefing not graceful: {out2!r}")
+    finally:
+        briefing._calendar_section, briefing._mail_section, briefing._reminders_section = orig
+
+    # check_briefing (the scheduler action) just returns the composed briefing.
+    # briefing_monitor / briefing_tool each bound build_briefing at import, so we
+    # patch it in THEIR namespaces (not tools.briefing) to keep the stub real-free.
+    import proactive.briefing_monitor as bmon
+    from proactive.scheduler import Trigger
+    real_build_mon = bmon.build_briefing
+    real_build_tool = briefing_tool.build_briefing
+    bmon.build_briefing = lambda: "Good morning, Sir."
+    briefing_tool.build_briefing = lambda: "Good morning, Sir."
+
+    spoken = bmon.check_briefing(Trigger(message="daily briefing", fire_at=0, kind="briefing"))
+    if spoken != "Good morning, Sir.":
+        fails.append(f"check_briefing did not return the briefing: {spoken!r}")
+
+    # Scheduling path: 'every morning at 8' -> one recurring 'briefing' trigger,
+    # and re-scheduling replaces rather than stacking. Use a temp scheduler so we
+    # never touch the real reminders.json.
+    with tempfile.TemporaryDirectory() as d:
+        from proactive.scheduler import Scheduler
+        temp = Scheduler(store_path=Path(d) / "reminders.json")
+        temp.init(speak=lambda _t: None)
+        real_sched = briefing_tool.scheduler
+        briefing_tool.scheduler = temp
+        try:
+            r1 = briefing_tool.daily_briefing("every morning at 8")
+            if not isinstance(r1, dict) or r1.get("status") != "success":
+                fails.append(f"scheduling a briefing did not succeed: {r1!r}")
+            briefing_tool.daily_briefing("every day at 7am")  # re-schedule
+            briefings = [t for t in temp.list_pending() if t.kind == "briefing"]
+            if len(briefings) != 1:
+                fails.append(f"expected exactly one briefing trigger, got {len(briefings)}")
+            elif not briefings[0].recurrence or briefings[0].recurrence.get("kind") != "daily":
+                fails.append(f"briefing trigger not recurring daily: {briefings[0].recurrence!r}")
+
+            # No time -> brief now: returns spoken text, schedules nothing.
+            before = len([t for t in temp.list_pending() if t.kind == "briefing"])
+            now_out = briefing_tool.daily_briefing("")
+            if not isinstance(now_out, str):
+                fails.append(f"on-demand briefing should return spoken text, got {type(now_out)}")
+            after = len([t for t in temp.list_pending() if t.kind == "briefing"])
+            if after != before:
+                fails.append("on-demand briefing scheduled a trigger it shouldn't have")
+        finally:
+            briefing_tool.scheduler = real_sched
+    # Restore the patched composer references.
+    bmon.build_briefing = real_build_mon
+    briefing_tool.build_briefing = real_build_tool
+    return fails
+
+
 def run():
     all_fails = []
     for name, fn in [
@@ -212,6 +376,9 @@ def run():
         ("recurring", test_recurring_reschedules),
         ("web monitor", test_web_monitor),
         ("mail monitor", test_mail_monitor),
+        ("clipboard monitor", test_clipboard_monitor),
+        ("notification monitor", test_notification_monitor),
+        ("briefing", test_briefing),
     ]:
         fails = fn()
         status = "PASS" if not fails else "FAIL"

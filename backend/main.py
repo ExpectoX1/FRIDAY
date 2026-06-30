@@ -48,7 +48,7 @@ BARGE_BLOCKS = max(2, int(0.5 / BLOCK_DURATION))  # ~0.5s sustained loud input
 BARGE_DEBUG = os.getenv("FRIDAY_BARGE_DEBUG", "0") == "1"
 interrupt_event = threading.Event()
 
-LLM_INTERPRET = {"search_memory", "search_web", "read_page", "read_file", "read_project_file"}
+LLM_INTERPRET = {"search_memory", "search_web", "read_page", "read_file", "read_project_file", "read_clipboard"}
 
 # Codex's local-code interceptor (local_code.py) is opt-in only — it over-triggered
 # and conflicts with the deterministic find_project tool path. See call site.
@@ -450,6 +450,8 @@ async def handle_response(response: dict):
                     prompt = f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
                 elif name == "read_page":
                     prompt = f"Based on our conversation and the full text of this web page, give the user a natural, concise spoken answer to what they just asked. Lead with the key points. Do NOT ask what they want — just summarize and answer directly.\n\nPage:\n{result}"
+                elif name == "read_clipboard":
+                    prompt = f"This is what the user just copied to their clipboard. Do what they asked with it — summarize, explain, translate, or fix it — in a concise, spoken-friendly reply. If they didn't specify, give a short helpful summary.\n\nClipboard:\n{result}"
                 else:  # read_file / read_project_file — answer about the code, never read it aloud
                     prompt = f"Based on our conversation and this file's contents, answer the user's question / give your review. Be specific and grounded in the code. Do NOT read the code aloud.\n\n{result}"
                 follow_up = await asyncio.to_thread(chat, prompt)

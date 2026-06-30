@@ -14,6 +14,11 @@ from tools.projects import find_project, read_project_file
 from tools.calendar_tool import get_calendar
 from tools.gmail_tool import read_email
 from tools.email_watch import watch_email
+from tools.clipboard_tool import read_clipboard
+from tools.clipboard_watch import watch_clipboard
+from tools.notifications_tool import check_messages
+from tools.notification_watch import watch_notifications
+from tools.briefing_tool import daily_briefing
 from memory.retrieve import search_memory
 
 
@@ -177,6 +182,31 @@ TOOLS: dict[str, Tool] = {
         "args": ["criteria", "interval"],
         "function": watch_email,
     },
+    "read_clipboard": {
+        "description": "Read what's currently on the clipboard so you can act on it — summarize, explain, translate, or fix what the user just copied. Use for 'what did I copy', 'summarize this', 'explain what I copied', 'translate my clipboard', 'fix this'. Returns the clipboard text (refuses obvious secrets like passwords/keys).",
+        "args": [],
+        "function": read_clipboard,
+    },
+    "watch_clipboard": {
+        "description": "Turn the proactive clipboard companion on or off. When on, FRIDAY watches the clipboard and offers help when the user copies something useful (an error, code, a question, foreign text) — never passwords. Use for 'keep an eye on my clipboard', 'watch my clipboard', 'stop watching my clipboard'. Pass mode 'on' or 'off'.",
+        "args": ["mode"],
+        "function": watch_clipboard,
+    },
+    "check_messages": {
+        "description": "Read recent incoming messages/notifications (WhatsApp, Instagram, etc.) from the user's macOS Notification Center, right now. Use for 'any new messages', 'any DMs', 'check my messages', 'any WhatsApp messages'. Pass 'sources' like 'whatsapp instagram' or leave empty for messaging apps. One-time read — use watch_notifications for ongoing alerts.",
+        "args": ["sources"],
+        "function": check_messages,
+    },
+    "watch_notifications": {
+        "description": "Proactively WATCH macOS notifications and alert the user when a new message arrives from the watched apps (WhatsApp, Instagram, etc.). Use for 'tell me when I get a WhatsApp message', 'watch for Instagram DMs', 'let me know when someone messages me', 'watch my notifications'. Pass 'sources' ('whatsapp instagram', empty = messaging apps) and mode 'on'/'off'. Ongoing watch — different from check_messages, which reads once.",
+        "args": ["sources", "mode"],
+        "function": watch_notifications,
+    },
+    "daily_briefing": {
+        "description": "Give the user their daily briefing — a short spoken rundown of today's calendar, unread email, and reminders, woven together. Use for 'good morning', 'brief me', 'my briefing', 'what's my day look like', 'give me the rundown', 'how does my day look'. With no time it briefs RIGHT NOW; to set up a recurring briefing pass 'when' like 'every morning at 8' or 'every day at 7:30am'.",
+        "args": ["when"],
+        "function": daily_briefing,
+    },
 }
 
 
@@ -217,6 +247,8 @@ ARG_DETAILS: dict[str, dict] = {
     "timeframe": {"type": "string", "description": "Calendar range to read: 'today', 'tomorrow', or 'this week'. Empty defaults to today."},
     "filter": {"type": "string", "description": "Which mail to read: 'unread', 'starred', 'important', 'from <name>', 'today'. Empty reads unread mail."},
     "criteria": {"type": "string", "description": "Which mail to watch for: 'important', 'starred', or 'from <email>'. Empty watches important mail."},
+    "mode": {"type": "string", "description": "'on' to start, 'off' to stop.", "enum": ["on", "off"]},
+    "sources": {"type": "string", "description": "Which apps/messages to watch, e.g. 'whatsapp instagram'. Empty = messaging apps."},
     "project": {"type": "string", "description": "The project name the user mentioned (may be misheard, e.g. 'teeny url')."},
     "filename": {"type": "string", "description": "File to read, e.g. 'main.py'. Empty reads the project's main entry file."},
 }

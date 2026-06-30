@@ -18,7 +18,60 @@ from brain.agent import _tool_failed, _announces_next_action, _parse_verdict
 from tools.web import _strip_filler, _is_newsy
 from tools.calendar_tool import _parse_range
 from tools.gmail_tool import _to_gmail_query
+from tools.clipboard_tool import _looks_like_secret, _classify
+from tools.notifications_tool import _extract, matches as notif_matches
 from local_code import prepare_code_review
+
+# Notification parsing/matching, pinned against the REAL macOS 15 plist shape
+# observed on this Mac: {app, req:{titl,subt,body,iden}}. No DB/FDA needed.
+_NOTIF_IG = _extract(
+    {"app": "com.google.Chrome.framework",
+     "req": {"titl": "priya._", "subt": "[www.instagram.com](https://www.instagram.com)",
+             "body": "sent you a message", "iden": "p#https://www.instagram.com/"}},
+    "com.google.Chrome",
+)
+_NOTIF_WA = _extract(
+    {"app": "net.whatsapp.WhatsApp",
+     "req": {"titl": "Mom", "body": "call me", "subt": "", "iden": ""}},
+    "net.whatsapp.WhatsApp",
+)
+_NOTIF_NOISE = _extract(
+    {"app": "com.google.Chrome.framework",
+     "req": {"titl": "Evening plans? Shop deals", "subt": "[www.myntra.com](https://www.myntra.com)",
+             "body": "Up To 50% Off", "iden": "p#https://www.myntra.com/"}},
+    "com.google.Chrome",
+)
+# (notification, sources, expected match)
+NOTIF_MATCH_CASES = [
+    (_NOTIF_IG, ["instagram"], True),               # web push → matched via subt/iden
+    (_NOTIF_WA, ["whatsapp"], True),                # native app → matched via bundle
+    (_NOTIF_NOISE, ["whatsapp", "instagram"], False),  # Myntra deal → ignored
+    (_NOTIF_IG, ["whatsapp"], False),               # wrong source → no match
+]
+# the extractor pulls the right fields
+NOTIF_EXTRACT_OK = (_NOTIF_WA["title"] == "Mom" and _NOTIF_WA["body"] == "call me"
+                    and "instagram.com" in _NOTIF_IG["subtitle"])
+
+# (clipboard text, expected _looks_like_secret) — the reactive read and the
+# proactive watcher must both refuse credentials. Passwords/keys never leave.
+CLIPBOARD_SECRET_CASES = [
+    ("hello world, this is normal text", False),
+    ("def add(a, b):\n    return a + b", False),
+    ("my password is hunter2", True),            # secret hint word
+    ("nvapi-abc123def456ghi789", True),          # key prefix
+    ("aB3xY9zKmN2pQr7sT", True),                 # long single-line mixed token
+    ("https://example.com/some/page", False),
+]
+
+# (clipboard text, expected proactive category) — only positively-useful content
+# nudges; secrets/trivia stay silent (None).
+CLIPBOARD_CLASSIFY_CASES = [
+    ("Traceback (most recent call last):\n  File x\nValueError: bad", "error"),
+    ("How do I reverse a list in Python?", "question"),
+    ("for i in range(10):\n    print(i)\n", "code"),
+    ("hi", None),                                 # too trivial
+    ("nvapi-secrettokenvalue1234", None),         # secret → never
+]
 
 # (spoken request, substrings that MUST appear in the Gmail search) — the
 # natural-language → Gmail-search translation is pure, so we pin it without an
@@ -140,6 +193,21 @@ ROUTING_CASES = [
     ("any new mail from priya", False),
     ("tell me when i get an important email", False),
     ("watch my inbox for starred mail", False),
+    # Clipboard: read (single-shot) and watch (single-shot), never the agent.
+    ("what's on my clipboard", False),
+    ("summarize what i just copied", False),
+    ("keep an eye on my clipboard", False),
+    # Messages/notifications: read (single-shot) and watch (single-shot).
+    ("any new messages", False),
+    ("any whatsapp messages", False),
+    ("tell me when someone messages me", False),
+    ("watch for instagram dms", False),
+    # Daily briefing: brief-now (single daily_briefing) and scheduled briefing
+    # (single daily_briefing with a time) both stay single-shot, never the agent.
+    ("brief me", False),
+    ("what does my day look like", False),
+    ("give me the rundown", False),
+    ("brief me every morning at 8", False),
 ]
 
 # (utterance, expected tool name, or "reply")
@@ -163,6 +231,13 @@ TOOL_CASES = [
     ("check my email", "read_email"),
     ("any new mail from priya", "read_email"),
     ("tell me when i get an important email", "watch_email"),
+    ("what did i just copy", "read_clipboard"),
+    ("keep an eye on my clipboard", "watch_clipboard"),
+    ("any new whatsapp messages", "check_messages"),
+    ("tell me when i get a whatsapp message", "watch_notifications"),
+    ("brief me on my day", "daily_briefing"),
+    ("what does my day look like", "daily_briefing"),
+    ("brief me every morning at 8", "daily_briefing"),
 ]
 
 
@@ -254,6 +329,33 @@ def run():
             fails.append(f"_to_gmail_query({phrase!r:.30})")
         print(f"  {'PASS' if ok else 'FAIL'}  {query:34} {phrase!r}")
 
+    print("\nCLIPBOARD SECRET DETECTION (tools):")
+    for text, exp in CLIPBOARD_SECRET_CASES:
+        got = _looks_like_secret(text)
+        ok = got == exp
+        if not ok:
+            fails.append(f"_looks_like_secret({text!r:.30})")
+        print(f"  {'PASS' if ok else 'FAIL'}  secret={got!s:5} (want {exp!s:5})  {text[:40]!r}")
+
+    print("\nCLIPBOARD CLASSIFICATION (tools):")
+    for text, exp in CLIPBOARD_CLASSIFY_CASES:
+        got, _offer = _classify(text)
+        ok = got == exp
+        if not ok:
+            fails.append(f"_classify({text!r:.30})")
+        print(f"  {'PASS' if ok else 'FAIL'}  {got!s:8} (want {exp!s:8})  {text[:36]!r}")
+
+    print("\nNOTIFICATION PARSE + MATCH (tools):")
+    if not NOTIF_EXTRACT_OK:
+        fails.append("notifications _extract pulled wrong fields")
+    print(f"  {'PASS' if NOTIF_EXTRACT_OK else 'FAIL'}  _extract fields (title/body/subtitle)")
+    for n, src, exp in NOTIF_MATCH_CASES:
+        got = notif_matches(n, src)
+        ok = got == exp
+        if not ok:
+            fails.append(f"notif matches({n.get('title')!r}, {src})")
+        print(f"  {'PASS' if ok else 'FAIL'}  match={got!s:5} (want {exp!s:5})  {n.get('title','')[:24]!r} vs {src}")
+
     print("\nROUTING (is_complex):")
     for utt, exp in ROUTING_CASES:
         got = is_complex(utt)
@@ -313,6 +415,8 @@ def run():
 
     total = (len(TOOL_FAILURE_CASES) + len(NEXT_ACTION_CASES) + len(VERDICT_CASES)
              + len(FILLER_CASES) + len(CAL_RANGE_CASES) + len(GMAIL_QUERY_CASES)
+             + len(CLIPBOARD_SECRET_CASES) + len(CLIPBOARD_CLASSIFY_CASES)
+             + len(NOTIF_MATCH_CASES) + 1  # +1 for the _extract field check
              + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
              + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
              + len(LOCAL_CODE_NEGATIVE_CASES))

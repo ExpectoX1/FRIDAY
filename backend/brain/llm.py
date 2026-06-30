@@ -439,6 +439,16 @@ SIMPLE_SIGNALS = [
     "my email", "my emails", "my inbox", "my mail", "check my email",
     "check my mail", "read my email", "read my mail", "any new mail",
     "any unread", "emails from", "new mail", "any important email",
+    # Clipboard companion — a single read_clipboard call, single-shot.
+    "clipboard", "what did i copy", "what i copied", "i just copied",
+    "what i just copied",
+    # Messages/notifications read — a single check_messages call, single-shot.
+    "any messages", "any new messages", "any dms", "new messages",
+    "check my messages", "any whatsapp", "any instagram",
+    # Daily briefing — a single daily_briefing call, single-shot.
+    "brief me", "my briefing", "morning briefing", "the rundown",
+    "give me the rundown", "what's my day", "whats my day", "how's my day",
+    "hows my day", "my day look", "my day looking",
 ]
 
 # Proactive single tool calls (reminders, timers, monitors). Checked BEFORE
@@ -456,6 +466,14 @@ REMINDER_SIGNALS = [
     "tweets", "tweet", "on twitter", " on x ", "posts on x",
     # Email watchers are a single watch_email call (proactive), not the agent.
     "watch my email", "watch my inbox", "watch my mail", "alert me about",
+    # Clipboard watcher — single watch_clipboard call.
+    "watch my clipboard", "keep an eye on my clipboard", "stop watching my clipboard",
+    # Notification/message watcher — single watch_notifications call.
+    "watch my notifications", "watch for messages", "watch for whatsapp",
+    "watch for instagram", "watch for dms", "tell me when someone messages",
+    "stop watching my notifications",
+    # Scheduled daily briefing — a single daily_briefing(when=...) call.
+    "brief me every", "briefing every", "daily briefing", "brief me each",
 ]
 
 
