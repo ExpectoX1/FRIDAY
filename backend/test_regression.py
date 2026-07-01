@@ -162,7 +162,10 @@ ROUTING_CASES = [
     ("open twitter on chrome", False),  # single navigate, not multi-step
     ("commit my friday project", True),
     ("Can you write a test file which will do the testing of these functions?", True),
-    ("Can you list out whatever is in my download folder?", True),
+    # File LISTING is single-shot (one ls); only batch MUTATIONS are agent work.
+    ("Can you list out whatever is in my download folder?", False),
+    ("sort my downloads folder by type", True),
+    ("organize the files on my desktop", True),
     ("find and play the latest yjr video", True),
     ("markaroni is live, can you open the stream", True),
     ("play the latest yjr video", True),
@@ -238,6 +241,11 @@ TOOL_CASES = [
     ("brief me on my day", "daily_briefing"),
     ("what does my day look like", "daily_briefing"),
     ("brief me every morning at 8", "daily_briefing"),
+    # Filesystem inspection must hit run_shell (ls), NOT look_at_screen. The model
+    # used to grab look_at_screen or refuse ("can't access files") because the tool
+    # descriptions didn't claim folder-listing; this is the fix's regression guard.
+    ("what's in my downloads folder", "run_shell"),
+    ("list the files in my downloads", "run_shell"),
 ]
 
 

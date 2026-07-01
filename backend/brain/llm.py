@@ -403,9 +403,12 @@ COMPLEX_SIGNALS = [
     "write a test", "write tests", "create a test", "create tests", "add tests",
     "test file", "testing of",
     "help me", "figure out", "work out", "go to", "navigate to",
-    "open chrome and", "list out", "list files", "list whatever",
-    "what's in my download", "what is in my download",
-    "whatever is in my download", "sort", "organize", "clean", "tidy", "rename",
+    "open chrome and",
+    # Batch file MUTATIONS stay on the agent (multi-step, write a script). Read-only
+    # LISTING ("what's in my downloads", "list the files") does NOT — it's a single
+    # run_shell(ls) and the agent actually picks the WRONG tool for it (look_at_screen
+    # / refuse), while single-shot nails run_shell. So listing is pinned SIMPLE below.
+    "sort", "organize", "clean", "tidy", "rename",
     # Discovery intents — need a web search before acting, so they must run in
     # the agent loop (search_web -> navigate_browser), never single-shot.
     # Checked before SIMPLE_SIGNALS so "open the stream" beats the "open " pin.
@@ -445,6 +448,11 @@ SIMPLE_SIGNALS = [
     # Messages/notifications read — a single check_messages call, single-shot.
     "any messages", "any new messages", "any dms", "new messages",
     "check my messages", "any whatsapp", "any instagram",
+    # File LISTING is one run_shell(ls) — single-shot picks run_shell reliably,
+    # the agent doesn't. (Mutations like sort/organize stay COMPLEX, checked first.)
+    "in my download", "in my desktop folder", "on my desktop",
+    "list the files", "list files in", "what files are", "list out whatever",
+    "contents of my", "what do i have in my",
     # Daily briefing — a single daily_briefing call, single-shot.
     "brief me", "my briefing", "morning briefing", "the rundown",
     "give me the rundown", "what's my day", "whats my day", "how's my day",

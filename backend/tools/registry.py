@@ -73,7 +73,7 @@ TOOLS: dict[str, Tool] = {
         "function": close_app,
     },
     "run_shell": {
-        "description": "Run a terminal shell command. Use for file operations, git commands, system info. NOT for opening apps, NOT for browser navigation.",
+        "description": "Run a terminal shell command on this Mac and return its output. This is how you INSPECT THE FILESYSTEM: to list or browse what's inside a folder, or answer 'what's in my Downloads folder', 'list the files on my desktop', 'what do I have in ~/Projects', use `ls` (Downloads is ~/Downloads, Desktop is ~/Desktop, home is ~). Also use it for moving/finding/checking files, git commands, and system info. For ANY question about files or folders on disk, use this — NEVER look_at_screen. NOT for opening apps, NOT for browser navigation.",
         "args": ["command"],
         "function": run_shell,
     },
