@@ -28,6 +28,7 @@ Requires Ollama running (`ollama serve`); Neo4j for memory (`neo4j start`, bolt:
 cd backend && python test_regression.py     # routing + tool selection + continuity (~30s, exits nonzero on fail)
 cd backend && python test_capabilities.py    # real end-to-end agent tasks in a sandbox (per brain)
 cd backend && python bench_brain.py          # latency + tool-accuracy across models
+cd backend && python bench_router.py         # raw qwen2.5:3b router vs labeled routing cases
 ```
 Add a new assertion to `test_regression.py` whenever a bug is found, rather than re-catching it by voice.
 
@@ -36,6 +37,10 @@ Add a new assertion to `test_regression.py` whenever a bug is found, rather than
   backend-agnostic core; `chat()`/`agent_chat()` + their `_stream` variants build on it.
 - **Routing**: `is_complex()` keyword heuristic → qwen2.5:3b fallback. COMPLEX_SIGNALS (incl.
   stream/video/live) route to the agent; SIMPLE_SIGNALS (play/open/chitchat) stay single-shot.
+  Every decision is logged to `~/FRIDAY/logs/routing.jsonl` with the deciding tier — that's the
+  dataset for future routing work. Benchmarked (bench_router.py): the raw 3b router is only
+  ~65% on the labeled cases (proactive watch/remind intents fail hardest) and enriching its
+  rubric made it WORSE — the pins are the mechanism at this model size, not debt to remove.
 - **Agent loop** (`brain/agent.py`): native message-passing, confirmation→resume for RISKY
   commands, dup-call guard, terminal-tool short-circuit, and a "don't claim done after a failed
   step" push-back.

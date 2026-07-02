@@ -20,6 +20,7 @@ from tools.calendar_tool import _parse_range
 from tools.gmail_tool import _to_gmail_query
 from tools.clipboard_tool import _looks_like_secret, _classify
 from tools.notifications_tool import _extract, matches as notif_matches
+from tools.files import _is_protected_write
 from local_code import prepare_code_review
 
 # Notification parsing/matching, pinned against the REAL macOS 15 plist shape
@@ -285,6 +286,24 @@ LOCAL_CODE_NEGATIVE_CASES = [
 ]
 
 
+# (path, expected protected) — write_file must refuse credentials, shell
+# startup files, launch agents, and system paths (a write can BE the payload
+# even when running a script is confirmation-gated). Matching is by exact
+# component/filename: normal project files must never false-positive.
+PROTECTED_WRITE_CASES = [
+    ("~/FRIDAY/workspace/organize.py", False),
+    ("~/Projects/teenyurl/test_main.py", False),
+    ("~/Projects/app/environment.py", False),   # ".env" matches by NAME, not substring
+    ("~/Documents/notes.txt", False),
+    ("~/.zshrc", True),
+    ("~/.ssh/authorized_keys", True),
+    ("~/Library/LaunchAgents/com.friday.helper.plist", True),
+    ("~/Projects/app/.env", True),
+    ("/etc/hosts", True),
+    ("~/.aws/credentials", True),
+]
+
+
 # Fakes mimicking the ollama streaming response shape (chunk.message.tool_calls
 # with .function.name/.arguments), for pinning stream behavior without a model.
 class _FakeFn:
@@ -355,6 +374,14 @@ def run():
     if not ok:
         fails.append("build_pending_state shape not resumable by run_agent")
     print(f"  {'PASS' if ok else 'FAIL'}  build_pending_state is resumable by run_agent")
+
+    print("\nPROTECTED WRITE PATHS (tools):")
+    for path, exp in PROTECTED_WRITE_CASES:
+        got = _is_protected_write(path)
+        ok = got == exp
+        if not ok:
+            fails.append(f"_is_protected_write({path!r})")
+        print(f"  {'PASS' if ok else 'FAIL'}  protected={got!s:5} (want {exp!s:5})  {path}")
 
     print("\nTOOL FAILURE DETECTION (agent):")
     for result, exp in TOOL_FAILURE_CASES:
@@ -494,6 +521,7 @@ def run():
              + len(CLIPBOARD_SECRET_CASES) + len(CLIPBOARD_CLASSIFY_CASES)
              + len(NOTIF_MATCH_CASES) + 1  # +1 for the _extract field check
              + 2  # stream tool-call selection + pending-state shape
+             + len(PROTECTED_WRITE_CASES)
              + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
              + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
              + len(LOCAL_CODE_NEGATIVE_CASES))

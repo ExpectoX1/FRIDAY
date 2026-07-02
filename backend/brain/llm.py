@@ -1,7 +1,9 @@
 import os
 import re
+import time
 import ollama
 import json
+from pathlib import Path
 from brain.personality import get_personality
 from tools.registry import get_tools_spec
 
@@ -493,6 +495,12 @@ REMINDER_SIGNALS = [
 # boundary, so we give it a terse rubric plus hard few-shot examples (the cases
 # that actually flaked in testing) and decode at temperature 0. This is the
 # whole router-reliability fix: better priors + determinism, not more keywords.
+# NOTE (bench_router.py, 2026-07-02): do NOT enrich this rubric. Teaching it
+# about proactive one-call tools (watch/remind/brief = SIMPLE) dropped raw
+# accuracy 65% -> 63% and destabilized previously-passing cases ("set a timer
+# for 5 minutes" flipped to COMPLEX). At 3b, more instruction text means more
+# confusion — the keyword pins carry proactive intents; the router only needs
+# to handle the genuinely ambiguous middle, which it does (4/4).
 _ROUTER_SYSTEM = (
     "You route a voice assistant's request to one of two execution paths. "
     "Reply ONLY with the JSON classification.\n"
@@ -524,6 +532,53 @@ _ROUTER_FEWSHOT = [
 ]
 
 
+# Every routing decision appends one JSONL line here: which path the utterance
+# took (agent vs single-shot) and WHICH TIER decided it (a keyword pin or the
+# router model). This is the dataset for making routing data-driven: misroutes
+# observed in daily use can be relabeled and folded into the router's few-shot
+# set / the regression suite, instead of guessing at new keywords.
+ROUTING_LOG = Path.home() / "FRIDAY" / "logs" / "routing.jsonl"
+
+
+def _routed(message: str, decision: bool, source: str) -> bool:
+    try:
+        ROUTING_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(ROUTING_LOG, "a") as f:
+            f.write(json.dumps(
+                {"ts": time.time(), "utterance": message,
+                 "complex": decision, "source": source},
+                ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return decision
+
+
+def classify_with_router(message: str) -> bool:
+    """Raw qwen2.5:3b SIMPLE/COMPLEX classification — no keyword tiers in front.
+    Raises on backend errors; is_complex catches and falls back. Also called
+    directly by bench_router.py to measure the model's accuracy alone."""
+    response = ollama.chat(
+        model=ROUTER_MODEL,
+        messages=[{"role": "system", "content": _ROUTER_SYSTEM}]
+        + _ROUTER_FEWSHOT
+        + [{"role": "user", "content": message}],
+        format={
+            "type": "object",
+            "properties": {
+                "classification": {"type": "string", "enum": ["SIMPLE", "COMPLEX"]}
+            },
+            "required": ["classification"],
+        },
+        keep_alive=KEEP_ALIVE,
+        # temperature 0 makes the 3b classifier deterministic — the same
+        # utterance always routes the same way, killing the run-to-run
+        # flakiness where a borderline request sometimes dropped to SIMPLE.
+        options={"temperature": 0},
+    )
+    data = json.loads(response.message.content.strip())
+    return data.get("classification") == "COMPLEX"
+
+
 def is_complex(message: str) -> bool:
     """Routes an utterance to the agent loop (multi-step) vs single-shot chat.
 
@@ -535,37 +590,20 @@ def is_complex(message: str) -> bool:
          and put it on"). This replaces the old per-turn gemma3:12b call,
          which was ~5-10x slower for the same job.
     The heuristic is also the fallback if the router errors out.
+    Every decision is logged to ROUTING_LOG with the tier that made it.
     """
     text_lower = message.lower().strip()
     if any(s in text_lower for s in REMINDER_SIGNALS):
-        return False
+        return _routed(message, False, "reminder_pin")
 
     if any(s in text_lower for s in COMPLEX_SIGNALS):
-        return True
+        return _routed(message, True, "complex_pin")
 
     if any(s in text_lower for s in SIMPLE_SIGNALS):
-        return False
+        return _routed(message, False, "simple_pin")
 
     try:
-        response = ollama.chat(
-            model=ROUTER_MODEL,
-            messages=[{"role": "system", "content": _ROUTER_SYSTEM}]
-            + _ROUTER_FEWSHOT
-            + [{"role": "user", "content": message}],
-            format={
-                "type": "object",
-                "properties": {
-                    "classification": {"type": "string", "enum": ["SIMPLE", "COMPLEX"]}
-                },
-                "required": ["classification"],
-            },
-            keep_alive=KEEP_ALIVE,
-            # temperature 0 makes the 3b classifier deterministic — the same
-            # utterance always routes the same way, killing the run-to-run
-            # flakiness where a borderline request sometimes dropped to SIMPLE.
-            options={"temperature": 0},
-        )
-        data = json.loads(response.message.content.strip())
-        return data.get("classification") == "COMPLEX"
+        return _routed(message, classify_with_router(message), "router")
     except Exception:
-        return False  # heuristic already said not-complex; default to single-shot
+        # heuristic already said not-complex; default to single-shot
+        return _routed(message, False, "router_error")
