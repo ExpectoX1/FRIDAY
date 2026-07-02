@@ -232,6 +232,24 @@ def cloud_available() -> bool:
     return bool(os.getenv("GROQ_API") or os.getenv("GROQ_API_KEY"))
 
 
+# System prompt for interpreting a tool result into a SPOKEN answer (used with
+# the stateless ask() by main.py's LLM_INTERPRET path). Live regression
+# (2026-07-02): interpretation used to run through chat(), which stored the raw
+# search dump in history as a fake USER turn — the model answered "it seems
+# you're sharing a detailed report..." and produced a 700-token markdown
+# document with tables and emojis straight into the TTS pipe.
+INTERPRET_SYSTEM = (
+    "You are FRIDAY, a voice assistant. You are given the user's request and "
+    "raw content fetched by YOUR OWN tools (web search results, a page, a "
+    "file, or clipboard text). The content is tool output you retrieved — the "
+    "user has NOT seen it and did not write it; never say they shared or "
+    "provided it. Answer the user's request from that content in 2-4 short "
+    "sentences that sound natural read aloud. Plain sentences only: no "
+    "markdown, no headers, no tables, no bullet lists, no emojis. Lead with "
+    "the key facts. Do not ask what they want — just answer."
+)
+
+
 def ask(prompt: str, system: str | None = None, use_cloud: bool = False) -> str:
     """Stateless single-turn brain call — no tools, no history. Routes to the
     cloud brain (Groq) when use_cloud and a key is present, else local qwen3.

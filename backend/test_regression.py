@@ -316,6 +316,42 @@ PROTECTED_WRITE_CASES = [
 ]
 
 
+def _check_spoken_interpretation() -> tuple[bool, str]:
+    """Regression: tool-result interpretation ran through chat(), which stored
+    the raw search dump as a fake USER turn — the model answered "it seems
+    you're sharing a detailed report..." and spoke a 700-token markdown
+    document (headers, tables, emojis) through TTS. The interpret path (ask +
+    INTERPRET_SYSTEM) must yield a short, plain, spoken answer that never
+    accuses the user of providing the content."""
+    fake_result = (
+        "## Julián Alvarez Transfer\n"
+        "Atlético Madrid forward Julián Alvarez, 26, wants to leave. Barcelona "
+        "submitted a 130 million euro offer; Atlético demand 150 million upfront. "
+        "Alvarez has 20 goals in 49 games. Barcelona see him replacing Lewandowski. "
+        "The deal is expected after the 2026 World Cup.\n"
+        "| Player | Club | Fee |\n| Alvarez | Atletico | 150M |"
+    )
+    prompt = (
+        'The user asked: "What is the latest news of Alvarez to Barcelona?"\n\n'
+        "Answer the user's question from these web search results you just "
+        "fetched. Lead with the key facts (who/what/when).\n\n"
+        f"[Tool output — search_web]:\n{fake_result}"
+    )
+    reply = llm.ask(prompt, system=llm.INTERPRET_SYSTEM)
+    low = reply.lower()
+    problems = []
+    if any(m in low for m in ("you shared", "you provided", "you're sharing",
+                              "you have provided", "you've shared")):
+        problems.append("accuses user of providing the content")
+    if any(m in reply for m in ("##", "**", "|", "\n- ")):
+        problems.append("markdown in a spoken reply")
+    if len(reply) > 800:
+        problems.append(f"too long to speak ({len(reply)} chars)")
+    if "alvarez" not in low:
+        problems.append("didn't answer the question")
+    return (not problems, "; ".join(problems) or reply[:60])
+
+
 # Fakes mimicking the ollama streaming response shape (chunk.message.tool_calls
 # with .function.name/.arguments), for pinning stream behavior without a model.
 class _FakeFn:
@@ -386,6 +422,12 @@ def run():
     if not ok:
         fails.append("build_pending_state shape not resumable by run_agent")
     print(f"  {'PASS' if ok else 'FAIL'}  build_pending_state is resumable by run_agent")
+
+    print("\nSPOKEN INTERPRETATION (tool result -> voice answer):")
+    ok, detail = _check_spoken_interpretation()
+    if not ok:
+        fails.append(f"spoken interpretation: {detail}")
+    print(f"  {'PASS' if ok else 'FAIL'}  {detail}")
 
     print("\nPROTECTED WRITE PATHS (tools):")
     for path, exp in PROTECTED_WRITE_CASES:
@@ -545,6 +587,7 @@ def run():
              + len(CLIPBOARD_SECRET_CASES) + len(CLIPBOARD_CLASSIFY_CASES)
              + len(NOTIF_MATCH_CASES) + 1  # +1 for the _extract field check
              + 2  # stream tool-call selection + pending-state shape
+             + 1  # spoken interpretation shape
              + len(PROTECTED_WRITE_CASES)
              + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
              + len(CONTEXT_BLEED_CASES)

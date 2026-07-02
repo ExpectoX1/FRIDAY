@@ -10,7 +10,7 @@ import subprocess
 import sounddevice as sd
 from voice.stt import listen, transcribe, rms, _input_device, SAMPLE_RATE, BLOCK_DURATION
 from voice.tts import generate, play, generate_stream
-from brain.llm import chat, chat_stream, is_complex
+from brain.llm import chat, chat_stream, is_complex, ask, INTERPRET_SYSTEM
 from brain.agent import run_agent, _tool_status, build_pending_state
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
@@ -48,6 +48,9 @@ BARGE_BLOCKS = max(2, int(0.5 / BLOCK_DURATION))  # ~0.5s sustained loud input
 BARGE_DEBUG = os.getenv("FRIDAY_BARGE_DEBUG", "0") == "1"
 interrupt_event = threading.Event()
 
+# Tool results in this set get interpreted into a SPOKEN answer via the
+# stateless ask() + INTERPRET_SYSTEM (see brain/llm.py) — NOT chat(), so the
+# raw dump never enters history as a fake user turn.
 LLM_INTERPRET = {"search_memory", "search_web", "read_page", "read_file", "read_project_file", "read_clipboard"}
 
 # Codex's local-code interceptor (local_code.py) is opt-in only — it over-triggered
@@ -455,19 +458,30 @@ async def handle_response(response: dict, user_text: str = ""):
         if name in LLM_INTERPRET and result:
             try:
                 if name == "search_memory":
-                    prompt = f"Based on our conversation and this memory context, give a natural, concise spoken answer to what the user just asked. Do NOT ask what they want — just answer directly.\n\nMemory:\n{result}"
+                    task = "Answer the user's question from this memory context."
                 elif name == "search_web":
-                    prompt = f"Based on our conversation and these web search results, give the user a natural, concise spoken answer to what they just asked. Lead with the key facts. Do NOT ask what they want — just summarize and answer directly.\n\nResults:\n{result}"
+                    task = "Answer the user's question from these web search results you just fetched. Lead with the key facts (who/what/when)."
                 elif name == "read_page":
-                    prompt = f"Based on our conversation and the full text of this web page, give the user a natural, concise spoken answer to what they just asked. Lead with the key points. Do NOT ask what they want — just summarize and answer directly.\n\nPage:\n{result}"
+                    task = "Answer the user's question from this page you just read. Lead with the key points."
                 elif name == "read_clipboard":
-                    prompt = f"This is what the user just copied to their clipboard. Do what they asked with it — summarize, explain, translate, or fix it — in a concise, spoken-friendly reply. If they didn't specify, give a short helpful summary.\n\nClipboard:\n{result}"
+                    task = "This is what the user just copied to their clipboard. Do what they asked with it — summarize, explain, translate, or fix it. If they didn't specify, give a short helpful summary."
                 else:  # read_file / read_project_file — answer about the code, never read it aloud
-                    prompt = f"Based on our conversation and this file's contents, answer the user's question / give your review. Be specific and grounded in the code. Do NOT read the code aloud.\n\n{result}"
-                follow_up = await asyncio.to_thread(chat, prompt)
-                content = follow_up.get("content", str(result))
+                    task = "Answer the user's question about this file's contents. Be specific and grounded in the code you see; never read the code aloud."
+                asked = f'The user asked: "{user_text}"\n\n' if user_text else ""
+                # Cap the dump — search_web reads whole articles; feeding tens of
+                # KB into the follow-up mostly adds latency, not answer quality.
+                prompt = f"{asked}{task}\n\n[Tool output — {name}]:\n{str(result)[:6000]}"
+                content = await asyncio.to_thread(ask, prompt, INTERPRET_SYSTEM)
+                content = content or str(result)[:200]
                 status("FRIDAY", content)
                 deliver_reply(content, enqueue_speech)
+                # Continuity: record the QUESTION and the spoken ANSWER — never
+                # the raw dump (chat() used to store the whole thing as a fake
+                # user turn, which also polluted the next few turns' context).
+                if user_text:
+                    from brain.llm import history as chat_history
+                    chat_history.append({"role": "user", "content": user_text})
+                    chat_history.append({"role": "assistant", "content": content})
             except Exception as e:
                 log_error(f"LLM follow-up failed: {e}")
                 content = str(result)[:200]
