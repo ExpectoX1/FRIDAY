@@ -10,8 +10,13 @@ swift run FridayIsland
 ```
 
 Start the Python backend with `python main.py` to use the live bridge at
-`127.0.0.1:8767`. If the bridge is unavailable, the app automatically falls
-back to a mock timeline that cycles through every visual state.
+`127.0.0.1:8767`. If the bridge is unavailable (or drops — e.g. a backend
+restart), the app shows an honest offline state and reconnects automatically
+with backoff; the island face sleeps until the backend is back.
+
+For UI development without a backend, launch with `FRIDAY_ISLAND_MOCK=1` to
+play a simulated timeline that cycles through every visual state. Mock is
+opt-in only — it never appears as a runtime fallback.
 
 ## Backend Contract
 
@@ -46,8 +51,11 @@ POST /api/input     { "text": "play something calm" }
 ```
 
 The backend should stay factual. The app maps state to expression/mood locally.
-`POST /api/input` currently returns 503 until Phase 3 is wired; the island treats
-that as an expected disabled/retry state.
+Typed input is enabled whenever the connection is live; while offline it is
+disabled with an explanatory note and re-enables itself on reconnect.
+
+Forward compatibility: unknown activity `kind`s render as plain status rows and
+malformed frames are skipped — additive backend changes never break the client.
 
 ## Optional Frame Animations
 

@@ -23,6 +23,20 @@ final class BackendClient {
         let task = URLSession.shared.webSocketTask(with: webSocketURL)
         webSocketTask = task
         task.resume()
+        // Keepalive: a hard-killed backend can leave receive() hanging forever
+        // on a half-open socket. A failed ping tears the task down, receive()
+        // throws, and the store's supervisor reconnects promptly.
+        let keepalive = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                task.sendPing { error in
+                    if error != nil {
+                        task.cancel(with: .abnormalClosure, reason: nil)
+                    }
+                }
+            }
+        }
+        defer { keepalive.cancel() }
         try await receiveLoop(task: task, onEvent: onEvent)
     }
 
@@ -62,8 +76,11 @@ final class BackendClient {
                 continue
             }
 
-            let event = try JSONDecoder().decode(AssistantEvent.self, from: data)
-            onEvent(event)
+            // One malformed frame must not kill the connection — skip it and
+            // keep listening. Only transport errors end the loop.
+            if let event = try? JSONDecoder().decode(AssistantEvent.self, from: data) {
+                onEvent(event)
+            }
         }
     }
 

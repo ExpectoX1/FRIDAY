@@ -9,9 +9,25 @@ final class AssistantStore: ObservableObject {
         AssistantActivity(kind: .status, text: "FRIDAY is starting up.")
     ]
     @Published private(set) var streamingReply = ""
-    @Published private(set) var inputAvailable = true
-    @Published private(set) var inputDisabledReason: String?
     @Published var lastActionError: String?
+
+    /// Typed input mirrors the live connection instead of latching off on the
+    /// first failed POST (the old behavior stranded the input box after any
+    /// transient hiccup, e.g. a backend restart).
+    var inputAvailable: Bool { connectionStatus == .connected }
+
+    var inputDisabledReason: String? {
+        switch connectionStatus {
+        case .connected: nil
+        case .connecting: "Connecting to FRIDAY..."
+        case .disconnected: "FRIDAY is offline — reconnecting automatically."
+        case .mock: "Mock mode — typed input goes nowhere."
+        }
+    }
+
+    var isOffline: Bool {
+        connectionStatus == .disconnected || connectionStatus == .connecting
+    }
 
     private let client = BackendClient()
     private var mockTask: Task<Void, Never>?
@@ -20,6 +36,13 @@ final class AssistantStore: ObservableObject {
     private var lastReplyPreview: String?
     private var lastStatusKey: String?
     private var seenActivityIDs = Set<String>()
+    private var announceReconnect = false
+
+    /// Mock is a DEV affordance (launch with FRIDAY_ISLAND_MOCK=1) — never a
+    /// runtime fallback. A disconnect must show "offline", not a fabricated
+    /// timeline with fake transcripts and fake approval requests.
+    private let mockEnabled =
+        ProcessInfo.processInfo.environment["FRIDAY_ISLAND_MOCK"] == "1"
 
     var state: AssistantState { event.state }
 
@@ -37,13 +60,19 @@ final class AssistantStore: ObservableObject {
         mockTask?.cancel()
         connectionTask?.cancel()
         client.disconnect()
-        connectionStatus = .connecting
         lastActionError = nil
-        seenActivityIDs.removeAll()
         streamingReply = ""
 
+        if mockEnabled {
+            connectionStatus = .mock
+            append(.status, "Mock mode — showing a simulated timeline.")
+            startMockTimeline()
+            return
+        }
+
+        connectionStatus = .connecting
         connectionTask = Task { [weak self] in
-            await self?.connectLoop()
+            await self?.supervise()
         }
     }
 
@@ -55,25 +84,17 @@ final class AssistantStore: ObservableObject {
             do {
                 try await client.sendInput(trimmed)
                 lastActionError = nil
-                inputDisabledReason = nil
             } catch {
-                if case BackendClientError.httpStatus(503) = error {
-                    inputAvailable = false
-                    inputDisabledReason = "Typed input is waiting on backend Phase 3."
-                    lastActionError = nil
-                } else {
-                    inputAvailable = false
-                    inputDisabledReason = "Typed input could not reach FRIDAY."
-                    lastActionError = nil
-                }
+                // A failed POST usually means the socket is gone too — surface
+                // it and kick the supervisor rather than disabling input.
+                lastActionError = "Couldn't reach FRIDAY — reconnecting."
+                reconnect()
             }
         }
     }
 
     func retryTypedInput() {
-        inputAvailable = true
-        inputDisabledReason = nil
-        lastActionError = nil
+        reconnect()
     }
 
     func clearActivity() {
@@ -97,22 +118,48 @@ final class AssistantStore: ObservableObject {
         }
     }
 
-    private func connectLoop() async {
-        do {
-            try await client.healthCheck()
-            inputAvailable = true
-            inputDisabledReason = nil
-            try await client.connect { [weak self] event in
-                Task { @MainActor in
-                    self?.connectionStatus = .connected
-                    self?.apply(event)
-                    self?.lastActionError = nil
+    /// Owns the connection for the life of the app: connect, stream events,
+    /// and on ANY failure (backend not up yet, restarted, crashed) back off
+    /// and retry until it's back. The island heals itself — the old one-shot
+    /// connect fell into mock forever and needed a manual menu click.
+    private func supervise() async {
+        var attempt = 0
+        while !Task.isCancelled {
+            do {
+                try await client.healthCheck()
+                try await client.connect { [weak self] event in
+                    Task { @MainActor in
+                        self?.markConnected()
+                        self?.apply(event)
+                    }
                 }
+                // connect() only returns/throws when the socket ends.
+            } catch {}
+
+            guard !Task.isCancelled else { return }
+
+            if connectionStatus == .connected {
+                // We WERE live and lost it (backend restart) — say so in the
+                // timeline and restart the backoff from the short end.
+                append(.status, "Lost the connection to FRIDAY — reconnecting.")
+                announceReconnect = true
+                attempt = 0
             }
-        } catch {
-            connectionStatus = .mock
-            append(.status, "Backend unavailable. Showing mock state.")
-            startMockTimeline()
+            connectionStatus = .disconnected
+            attempt += 1
+            let backoff = min(8.0, Double(1 << min(attempt, 3)))  // 2s, 4s, 8s, 8s...
+            try? await Task.sleep(for: .seconds(backoff))
+            guard !Task.isCancelled else { return }
+            connectionStatus = .connecting
+        }
+    }
+
+    private func markConnected() {
+        guard connectionStatus != .connected else { return }
+        connectionStatus = .connected
+        if announceReconnect {
+            announceReconnect = false
+            append(.status, "Reconnected to FRIDAY.")
         }
     }
 

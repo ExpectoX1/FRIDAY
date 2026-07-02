@@ -180,7 +180,11 @@ struct AssistantActivity: Identifiable, Codable, Equatable {
         id = try container.decode(String.self, forKey: .id)
         let timestamp = try container.decodeIfPresent(Double.self, forKey: .ts)
         date = timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
-        kind = try container.decode(AssistantActivityKind.self, forKey: .kind)
+        // Forward compatibility: a NEW backend activity kind must degrade to a
+        // plain status row, not throw — a throw here killed the whole WS
+        // connection, so any additive backend change broke the island.
+        let rawKind = try container.decode(String.self, forKey: .kind)
+        kind = AssistantActivityKind(rawValue: rawKind) ?? .status
         text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
         path = try container.decodeIfPresent(String.self, forKey: .path)
         language = try container.decodeIfPresent(String.self, forKey: .language)

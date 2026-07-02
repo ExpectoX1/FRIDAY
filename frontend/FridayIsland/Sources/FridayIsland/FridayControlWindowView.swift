@@ -53,6 +53,11 @@ struct FridayControlWindowView: View {
         VStack(spacing: 0) {
             header
 
+            if store.connectionStatus == .disconnected {
+                OfflineBanner { store.reconnect() }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             ActiveStateRail(color: statusColor, isActive: isWorkAnimationActive)
 
             ScrollViewReader { proxy in
@@ -263,22 +268,50 @@ struct FridayControlWindowView: View {
     }
 
     private var approvalControls: some View {
-        HStack(spacing: 10) {
-            Button {
-                store.approve(false)
-            } label: {
-                Text("Deny")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(WindowButtonStyle(kind: .secondary))
+        VStack(spacing: 8) {
+            if let command = event.pendingCommand, !command.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(WindowPalette.warning)
 
-            Button {
-                store.approve(true)
-            } label: {
-                Text("Approve")
-                    .frame(maxWidth: .infinity)
+                    Text(command)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(WindowPalette.primaryText)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(WindowPalette.approvalCard, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(WindowPalette.warning.opacity(0.35), lineWidth: 1)
+                }
             }
-            .buttonStyle(WindowButtonStyle(kind: .primary))
+
+            HStack(spacing: 10) {
+                Button {
+                    store.approve(false)
+                } label: {
+                    Text("Deny  ⌘N")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(WindowButtonStyle(kind: .secondary))
+                .keyboardShortcut("n", modifiers: .command)
+
+                Button {
+                    store.approve(true)
+                } label: {
+                    Text("Approve  ⌘Y")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(WindowButtonStyle(kind: .primary))
+                .keyboardShortcut("y", modifiers: .command)
+            }
         }
     }
 
@@ -813,6 +846,7 @@ private struct WorkIndicatorBubble: View {
     let symbol: String
     let color: Color
     @State private var glow = false
+    @State private var startDate = Date()
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -845,6 +879,8 @@ private struct WorkIndicatorBubble: View {
                         .lineLimit(2)
 
                     ThinkingDots(color: color)
+
+                    ElapsedBadge(startDate: startDate)
                 }
             }
             .padding(.horizontal, 13)
@@ -877,6 +913,62 @@ private struct WorkIndicatorBubble: View {
                 glow = true
             }
         }
+        .onChange(of: text) { _, _ in
+            startDate = Date()  // new phase ("Thinking" -> "Reading main.py") restarts the clock
+        }
+    }
+}
+
+/// Live elapsed-seconds badge for the work indicator. FRIDAY is a
+/// latency-tuned project — making wait time visible tells the user at a
+/// glance whether a step is normal (~2s), a cold model load (~10s), or stuck.
+private struct ElapsedBadge: View {
+    let startDate: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            let seconds = max(0, Int(timeline.date.timeIntervalSince(startDate)))
+            if seconds >= 2 {
+                Text("\(seconds)s")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(WindowPalette.secondaryText)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(WindowPalette.inputBackground, in: Capsule())
+                    .contentTransition(.numericText())
+            }
+        }
+    }
+}
+
+/// Shown when the backend is down: honest, calm, and self-healing — the
+/// supervisor keeps retrying; the button is just for the impatient.
+private struct OfflineBanner: View {
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(WindowPalette.error)
+
+            Text("FRIDAY is offline — reconnecting automatically")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(WindowPalette.primaryText)
+
+            ProgressView()
+                .controlSize(.small)
+
+            Spacer(minLength: 0)
+
+            Button("Retry now", action: retry)
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(WindowPalette.error)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 8)
+        .background(WindowPalette.error.opacity(0.10))
     }
 }
 

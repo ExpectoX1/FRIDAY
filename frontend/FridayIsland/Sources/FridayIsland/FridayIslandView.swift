@@ -95,9 +95,9 @@ struct FridayIslandView: View {
         VStack(spacing: isExpanded ? expandedSpacing : 0) {
             HStack(spacing: isExpanded ? 12 : 10) {
                 FaceView(
-                    state: event.state,
+                    state: store.isOffline ? .idle : event.state,
                     outcome: event.outcome,
-                    expression: event.state.expression,
+                    expression: store.isOffline ? .sleepy : event.state.expression,
                     amplitude: event.amplitude ?? 0,
                     pulse: pulse
                 )
@@ -164,7 +164,7 @@ struct FridayIslandView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 connectionDot
-                Text(event.state.title)
+                Text(store.isOffline ? "Offline" : event.state.title)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(IslandPalette.cream)
 
@@ -319,7 +319,12 @@ struct FridayIslandView: View {
     }
 
     private var primaryMessage: String {
-        event.message
+        if store.isOffline {
+            // The last event is stale while the backend is down — say so
+            // instead of showing an old status as if it were live.
+            return "Snoozing until the backend is back..."
+        }
+        return event.message
             ?? event.replyPreview
             ?? event.transcript
             ?? "Ready when you are."
