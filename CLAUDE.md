@@ -26,6 +26,8 @@ Requires Ollama running (`ollama serve`); Neo4j for memory (`neo4j start`, bolt:
 ## How to TEST (do this instead of manual voice testing — the user finds that exhausting)
 ```
 cd backend && python test_regression.py     # routing + tool selection + continuity (~30s, exits nonzero on fail)
+cd backend && python test_conversations.py   # MULTI-TURN sessions through the real pipeline (~40s) — every live
+                                             # bug so far was a between-turns seam bug; this catches them in CI
 cd backend && python test_capabilities.py    # real end-to-end agent tasks in a sandbox (per brain)
 cd backend && python bench_brain.py          # latency + tool-accuracy across models
 cd backend && python bench_router.py         # raw qwen2.5:3b router vs labeled routing cases

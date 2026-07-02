@@ -186,9 +186,15 @@ def set_last_result(label: str, content) -> None:
 # unrelated questions: with an `ls` listing + the navigate_browser imperative
 # in the system prompt, "what's the latest news on X" picked set_monitor 5/5
 # instead of search_web 5/5 (live misroute, 2026-07-02).
+# Bare it/that/this only count NEXT TO a referential verb — as free-standing
+# words they're just grammar ("what time is IT" got the block injected and the
+# model refused get_date_time; caught by test_conversations.py S4).
 _REFERS_TO_PRIOR = re.compile(
-    r"\b(it|that|this|those|these|them|the (page|link|site|chords|tab|video|"
-    r"result|results|article|file|files|folder|list|one|first one|second one))\b",
+    r"\b(open|show|play|read|reread|summari[sz]e|explain|translate|fix|expand|"
+    r"go to|pull up|take me to|launch|save|copy)\b[^.?!]*\b(it|that|this|them)\b"
+    r"|\b(those|these)\b"
+    r"|\bthe (page|link|site|chords|tab|video|result|results|article|file|"
+    r"files|folder|list|one|first one|second one)\b",
     re.IGNORECASE,
 )
 

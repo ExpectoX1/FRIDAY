@@ -250,6 +250,24 @@ TOOL_CASES = [
 ]
 
 
+# (utterance, expected match) — the gate deciding whether the last-result block
+# is injected into the system prompt. Bare it/that/this are grammar words and
+# must only count next to a referential verb; free-standing they dragged prior
+# context into unrelated turns ("what time is IT" -> get_date_time refusal).
+REFERS_PRIOR_CASES = [
+    ("open it", True),
+    ("play that", True),
+    ("can you summarize this for me", True),
+    ("open that page", True),
+    ("show me the chords", True),
+    ("which of those are folders", True),
+    ("what time is it", False),
+    ("is it going to rain tomorrow", False),
+    ("what's the latest news of Alvarez to Barcelona?", False),
+    ("how are you", False),
+]
+
+
 # (last-result content, NEW unrelated utterance, expected tool) — context bleed.
 # Live regression (2026-07-02): with the previous turn's `ls ~/Downloads` result
 # injected into the system prompt, a fresh one-time news question picked
@@ -539,6 +557,14 @@ def run():
             fails.append(utt)
         print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
 
+    print("\nPRIOR-RESULT INJECTION GATE (llm):")
+    for utt, exp in REFERS_PRIOR_CASES:
+        got = bool(llm._REFERS_TO_PRIOR.search(utt))
+        ok = got == exp
+        if not ok:
+            fails.append(f"_REFERS_TO_PRIOR({utt!r})")
+        print(f"  {'PASS' if ok else 'FAIL'}  refers={got!s:5} (want {exp!s:5})  {utt}")
+
     print("\nCONTEXT BLEED (unrelated question after a tool result):")
     for ctx, utt, exp in CONTEXT_BLEED_CASES:
         llm.set_last_result("run_shell", ctx)
@@ -590,7 +616,7 @@ def run():
              + 1  # spoken interpretation shape
              + len(PROTECTED_WRITE_CASES)
              + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
-             + len(CONTEXT_BLEED_CASES)
+             + len(REFERS_PRIOR_CASES) + len(CONTEXT_BLEED_CASES)
              + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
              + len(LOCAL_CODE_NEGATIVE_CASES))
     print(f"\n{total - len(fails)}/{total} passed")

@@ -435,8 +435,12 @@ async def handle_response(response: dict, user_text: str = ""):
 
         # Remember this result so the next turn can resolve "open it / that page /
         # the chords" against it (single-shot otherwise forgets tool output).
-        from brain.llm import set_last_result
-        set_last_result(name, result)
+        # NOT for confirmation prompts — "NEEDS_CONFIRMATION: ..." is a question
+        # to the user, not a result they can refer back to (storing it leaked
+        # the pending command into the next turn's context).
+        if not (isinstance(result, str) and result.startswith("NEEDS_CONFIRMATION:")):
+            from brain.llm import set_last_result
+            set_last_result(name, result)
 
         if isinstance(result, str) and result.startswith("NEEDS_CONFIRMATION:"):
             command = result.replace("NEEDS_CONFIRMATION:", "").strip()
@@ -613,6 +617,156 @@ async def _handle_local_code_request(text: str) -> bool:
     return True
 
 
+async def process_turn(text: str) -> None:
+    """One full assistant turn for an utterance or typed command: confirmation
+    resolution, routing, agent/single-shot execution, speech, and history.
+    Extracted from assistant_loop so test_conversations.py can drive real
+    multi-turn sessions through the exact production path without audio."""
+    global pending_confirmation
+
+    status("You", text)
+    log_user(text)
+    state_bus.publish_activity("user_message", text)
+    state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+    status("Thinking", "routing request")
+
+    # ── Confirmation flow ─────────────────────────────────────────
+    if pending_confirmation["active"]:
+        if _is_confirmation(text):
+            await approve_pending()
+            asyncio.create_task(store(f"User: {text}"))
+            return
+
+        elif _is_denial(text):
+            await deny_pending()
+            asyncio.create_task(store(f"User: {text}"))
+            return
+
+        else:
+            # User said something unrelated — clear confirmation, proceed normally
+            log_system("main", "Unrelated input — clearing pending confirmation.")
+            pending_confirmation = {"active": False, "state": None}
+
+    # ── Normal routing ────────────────────────────────────────────
+    turn_done = asyncio.Event()
+    cue_task = asyncio.create_task(_thinking_cues(turn_done))
+    try:
+        # Codex's pre-agent code-review interceptor — DISABLED by default.
+        # It over-triggered (hijacked "list my Downloads" into a code review)
+        # and ran a second parallel path. The agent now resolves projects
+        # deterministically via the find_project tool instead. Re-enable for
+        # experiments with FRIDAY_LOCAL_CODE=1.
+        if LOCAL_CODE_INTERCEPT and await _handle_local_code_request(text):
+            return
+
+        # Follow-up about code we've already read — answer FROM the working
+        # set (no re-reading, no fresh agent loop), routing deep questions to
+        # the cloud brain. This is what lets her chain "how does X work" /
+        # "is it secure" instead of re-summarizing the file generically.
+        if code_context.is_followup(text):
+            use_cloud = code_context.should_use_cloud(text)
+            log_system("main", f"Code follow-up ({'cloud' if use_cloud else 'local'} brain).")
+            if use_cloud:
+                state_bus.set_brain("cloud")
+            try:
+                state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+                answer, _ = await asyncio.to_thread(code_context.answer_followup, text)
+            finally:
+                if use_cloud:
+                    state_bus.set_brain(None)  # restore configured default
+            status("FRIDAY", answer)
+            deliver_reply(answer, enqueue_speech)
+            asyncio.create_task(store(f"User: {text}"))
+            return
+
+        complex_request = await asyncio.to_thread(is_complex, text)
+        if complex_request:
+            log_system("main", "Routing to agent loop.")
+            state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
+            status("Agent", "Thinking...")
+            # Immediate audible ack so the user isn't met with silence while the
+            # multi-step loop runs. If a latency cue already spoke, don't stack
+            # another short acknowledgement on top of it.
+            if not is_speaking.is_set() and text_queue.empty() and audio_queue.empty():
+                enqueue_speech(random.choice(AGENT_ACK_PHRASES))
+            from brain.llm import history as chat_history
+            response = await run_agent(text, chat_history=chat_history)
+            # handle_response speaks the final reply (sentence-pipelined via
+            # enqueue_speech) AND handles needs_confirmation / tool results —
+            # the agent path was previously silent without this.
+            await handle_response(response, user_text=text)
+            if response.get("type") == "reply":
+                # Plain text only — see approve_pending: JSON blobs in
+                # history teach the model to echo JSON back.
+                chat_history.append({"role": "user", "content": text})
+                chat_history.append({
+                    "role": "assistant",
+                    "content": response.get("content") or response.get("message") or "Done Sir.",
+                })
+        else:
+            response = None
+            sentence_buffer = ""
+            full_reply = ""
+            streamed = False  # did we already print tokens to the terminal?
+
+            def run_chat_stream():
+                nonlocal response, sentence_buffer, full_reply, streamed
+                for event_type, data in chat_stream(text):
+                    if event_type == "token":
+                        if not streamed:
+                            print("FRIDAY: ", end="", flush=True)
+                            streamed = True
+                        print(data, end="", flush=True)   # live token stream → terminal
+                        full_reply += data
+                        sentence_buffer += data
+                        parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
+                        if len(parts) > 1:
+                            for part in parts[:-1]:
+                                if part.strip():
+                                    enqueue_speech(part.strip())
+                            sentence_buffer = parts[-1]
+                        # Stream the growing reply to the UI. replyPreview (one
+                        # line, capped) feeds the island; streamingReply (full
+                        # text) feeds the window's live bubble. Set LAST so they
+                        # win over enqueue_speech's per-sentence replyPreview.
+                        state_bus.set_state(
+                            replyPreview=full_reply[:200], streamingReply=full_reply
+                        )
+                    elif event_type == "tool":
+                        name, args = data
+                        response = {"type": "tool", "name": name, "args": args}
+                    elif event_type == "reply":
+                        response = {"type": "reply", "content": data}
+
+            await asyncio.to_thread(run_chat_stream)
+
+            if streamed:
+                print(flush=True)  # close the streamed line
+
+            # Enqueue any remaining text in the buffer if it was a reply
+            if not response or response.get("type") == "reply":
+                if sentence_buffer.strip():
+                    enqueue_speech(sentence_buffer.strip())
+                content = (response or {}).get("content") or full_reply
+                log_response(response or {"type": "reply", "content": content})
+                if content.strip():
+                    if not streamed:  # tool/other path didn't stream — print once
+                        status("FRIDAY", content.strip())
+                    # Stop the live stream first, then publish the final bubble —
+                    # the window swaps its transient streaming bubble for this one.
+                    state_bus.set_state(streamingReply="")
+                    state_bus.publish_activity("assistant_message", content.strip())
+            else:
+                if streamed:  # streamed partial content before a tool call — clear it
+                    state_bus.set_state(streamingReply="")
+                log_response(response)
+                await handle_response(response, user_text=text)
+    finally:
+        turn_done.set()
+        cue_task.cancel()
+    asyncio.create_task(store(f"User: {text}"))
+
+
 async def assistant_loop():
     global pending_confirmation, MAIN_LOOP
     MAIN_LOOP = asyncio.get_running_loop()
@@ -684,147 +838,7 @@ async def assistant_loop():
             state_bus.set_state("idle", message="")
             continue
 
-        status("You", text)
-        log_user(text)
-        state_bus.publish_activity("user_message", text)
-        state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
-        status("Thinking", "routing request")
-
-        # ── Confirmation flow ─────────────────────────────────────────
-        if pending_confirmation["active"]:
-            if _is_confirmation(text):
-                await approve_pending()
-                asyncio.create_task(store(f"User: {text}"))
-                continue
-
-            elif _is_denial(text):
-                await deny_pending()
-                asyncio.create_task(store(f"User: {text}"))
-                continue
-
-            else:
-                # User said something unrelated — clear confirmation, proceed normally
-                log_system("main", "Unrelated input — clearing pending confirmation.")
-                pending_confirmation = {"active": False, "state": None}
-
-        # ── Normal routing ────────────────────────────────────────────
-        turn_done = asyncio.Event()
-        cue_task = asyncio.create_task(_thinking_cues(turn_done))
-        try:
-            # Codex's pre-agent code-review interceptor — DISABLED by default.
-            # It over-triggered (hijacked "list my Downloads" into a code review)
-            # and ran a second parallel path. The agent now resolves projects
-            # deterministically via the find_project tool instead. Re-enable for
-            # experiments with FRIDAY_LOCAL_CODE=1.
-            if LOCAL_CODE_INTERCEPT and await _handle_local_code_request(text):
-                continue
-
-            # Follow-up about code we've already read — answer FROM the working
-            # set (no re-reading, no fresh agent loop), routing deep questions to
-            # the cloud brain. This is what lets her chain "how does X work" /
-            # "is it secure" instead of re-summarizing the file generically.
-            if code_context.is_followup(text):
-                use_cloud = code_context.should_use_cloud(text)
-                log_system("main", f"Code follow-up ({'cloud' if use_cloud else 'local'} brain).")
-                if use_cloud:
-                    state_bus.set_brain("cloud")
-                try:
-                    state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
-                    answer, _ = await asyncio.to_thread(code_context.answer_followup, text)
-                finally:
-                    if use_cloud:
-                        state_bus.set_brain(None)  # restore configured default
-                status("FRIDAY", answer)
-                deliver_reply(answer, enqueue_speech)
-                asyncio.create_task(store(f"User: {text}"))
-                continue
-
-            complex_request = await asyncio.to_thread(is_complex, text)
-            if complex_request:
-                log_system("main", "Routing to agent loop.")
-                state_bus.set_state("thinking", message="Thinking...", transcript=text, tool=None)
-                status("Agent", "Thinking...")
-                # Immediate audible ack so the user isn't met with silence while the
-                # multi-step loop runs. If a latency cue already spoke, don't stack
-                # another short acknowledgement on top of it.
-                if not is_speaking.is_set() and text_queue.empty() and audio_queue.empty():
-                    enqueue_speech(random.choice(AGENT_ACK_PHRASES))
-                from brain.llm import history as chat_history
-                response = await run_agent(text, chat_history=chat_history)
-                # handle_response speaks the final reply (sentence-pipelined via
-                # enqueue_speech) AND handles needs_confirmation / tool results —
-                # the agent path was previously silent without this.
-                await handle_response(response)
-                if response.get("type") == "reply":
-                    # Plain text only — see approve_pending: JSON blobs in
-                    # history teach the model to echo JSON back.
-                    chat_history.append({"role": "user", "content": text})
-                    chat_history.append({
-                        "role": "assistant",
-                        "content": response.get("content") or response.get("message") or "Done Sir.",
-                    })
-            else:
-                response = None
-                sentence_buffer = ""
-                full_reply = ""
-                streamed = False  # did we already print tokens to the terminal?
-
-                def run_chat_stream():
-                    nonlocal response, sentence_buffer, full_reply, streamed
-                    for event_type, data in chat_stream(text):
-                        if event_type == "token":
-                            if not streamed:
-                                print("FRIDAY: ", end="", flush=True)
-                                streamed = True
-                            print(data, end="", flush=True)   # live token stream → terminal
-                            full_reply += data
-                            sentence_buffer += data
-                            parts = re.split(r"(?<=[.!?])\s+", sentence_buffer)
-                            if len(parts) > 1:
-                                for part in parts[:-1]:
-                                    if part.strip():
-                                        enqueue_speech(part.strip())
-                                sentence_buffer = parts[-1]
-                            # Stream the growing reply to the UI. replyPreview (one
-                            # line, capped) feeds the island; streamingReply (full
-                            # text) feeds the window's live bubble. Set LAST so they
-                            # win over enqueue_speech's per-sentence replyPreview.
-                            state_bus.set_state(
-                                replyPreview=full_reply[:200], streamingReply=full_reply
-                            )
-                        elif event_type == "tool":
-                            name, args = data
-                            response = {"type": "tool", "name": name, "args": args}
-                        elif event_type == "reply":
-                            response = {"type": "reply", "content": data}
-
-                await asyncio.to_thread(run_chat_stream)
-
-                if streamed:
-                    print(flush=True)  # close the streamed line
-
-                # Enqueue any remaining text in the buffer if it was a reply
-                if not response or response.get("type") == "reply":
-                    if sentence_buffer.strip():
-                        enqueue_speech(sentence_buffer.strip())
-                    content = (response or {}).get("content") or full_reply
-                    log_response(response or {"type": "reply", "content": content})
-                    if content.strip():
-                        if not streamed:  # tool/other path didn't stream — print once
-                            status("FRIDAY", content.strip())
-                        # Stop the live stream first, then publish the final bubble —
-                        # the window swaps its transient streaming bubble for this one.
-                        state_bus.set_state(streamingReply="")
-                        state_bus.publish_activity("assistant_message", content.strip())
-                else:
-                    if streamed:  # streamed partial content before a tool call — clear it
-                        state_bus.set_state(streamingReply="")
-                    log_response(response)
-                    await handle_response(response, user_text=text)
-        finally:
-            turn_done.set()
-            cue_task.cancel()
-        asyncio.create_task(store(f"User: {text}"))
+        await process_turn(text)
 
         await asyncio.sleep(0.01)
 
