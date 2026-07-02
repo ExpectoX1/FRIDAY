@@ -11,7 +11,7 @@ import sounddevice as sd
 from voice.stt import listen, transcribe, rms, _input_device, SAMPLE_RATE, BLOCK_DURATION
 from voice.tts import generate, play, generate_stream
 from brain.llm import chat, chat_stream, is_complex
-from brain.agent import run_agent, _tool_status
+from brain.agent import run_agent, _tool_status, build_pending_state
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run
 from logger import *
@@ -370,7 +370,7 @@ def tts_player_worker():
 # =========================================================
 
 
-async def handle_response(response: dict):
+async def handle_response(response: dict, user_text: str = ""):
     global pending_confirmation
     friday_done.clear()
     rtype = response.get("type")
@@ -437,7 +437,17 @@ async def handle_response(response: dict):
 
         if isinstance(result, str) and result.startswith("NEEDS_CONFIRMATION:"):
             command = result.replace("NEEDS_CONFIRMATION:", "").strip()
-            text_queue.put(
+            # Arm the same pending state the agent path uses. Without this the
+            # question was asked but "yes" arrived with no pending confirmation
+            # and routed as a new utterance — the command could never run.
+            pending_confirmation["active"] = True
+            pending_confirmation["state"] = build_pending_state(command, user_text)
+            state_bus.set_state(
+                "approval_required", requiresApproval=True, pendingCommand=command,
+                message=f"Approve: {command}",
+            )
+            state_bus.publish_activity("approval", f"Approve: {command}", tool="run_shell")
+            enqueue_speech(
                 f"Sir I need your approval to run: {command}. Should I proceed?"
             )
             return
@@ -500,10 +510,12 @@ async def approve_pending():
     )
     await handle_response(response)
     if response.get("type") == "reply":
+        # Plain text only — a json.dumps blob here gets fed back to chat() as a
+        # prior assistant turn and the model starts echoing JSON in its replies.
         chat_history.append({"role": "user", "content": saved_state["goal"]})
         chat_history.append({
             "role": "assistant",
-            "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."}),
+            "content": response.get("content") or response.get("message") or "Done Sir.",
         })
 
 
@@ -730,10 +742,12 @@ async def assistant_loop():
                 # the agent path was previously silent without this.
                 await handle_response(response)
                 if response.get("type") == "reply":
+                    # Plain text only — see approve_pending: JSON blobs in
+                    # history teach the model to echo JSON back.
                     chat_history.append({"role": "user", "content": text})
                     chat_history.append({
                         "role": "assistant",
-                        "content": json.dumps({"type": "reply", "content": response.get("content") or response.get("message") or "Done Sir."})
+                        "content": response.get("content") or response.get("message") or "Done Sir.",
                     })
             else:
                 response = None
@@ -792,7 +806,7 @@ async def assistant_loop():
                     if streamed:  # streamed partial content before a tool call — clear it
                         state_bus.set_state(streamingReply="")
                     log_response(response)
-                    await handle_response(response)
+                    await handle_response(response, user_text=text)
         finally:
             turn_done.set()
             cue_task.cancel()

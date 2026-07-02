@@ -14,7 +14,7 @@ import sys
 from brain.llm import is_complex, chat
 import brain.llm as llm
 from datetime import datetime
-from brain.agent import _tool_failed, _announces_next_action, _parse_verdict
+from brain.agent import _tool_failed, _announces_next_action, _parse_verdict, build_pending_state
 from tools.web import _strip_filler, _is_newsy
 from tools.calendar_tool import _parse_range
 from tools.gmail_tool import _to_gmail_query
@@ -285,10 +285,78 @@ LOCAL_CODE_NEGATIVE_CASES = [
 ]
 
 
+# Fakes mimicking the ollama streaming response shape (chunk.message.tool_calls
+# with .function.name/.arguments), for pinning stream behavior without a model.
+class _FakeFn:
+    def __init__(self, name, args):
+        self.name, self.arguments = name, args
+
+
+class _FakeToolCall:
+    def __init__(self, name, args):
+        self.function = _FakeFn(name, args)
+
+
+class _FakeMsg:
+    def __init__(self, tool_calls=None, content=""):
+        self.tool_calls, self.content = tool_calls, content
+
+
+class _FakeChunk:
+    def __init__(self, msg):
+        self.message = msg
+
+
+def _check_stream_tool_selection() -> bool:
+    """Regression: the streaming path took tool_calls[-1] while the non-streaming
+    path takes tool_calls[0] — the same request could execute a DIFFERENT tool
+    depending on which path handled it. Both must take the FIRST call."""
+    def fake_stream():
+        yield _FakeChunk(_FakeMsg(tool_calls=[_FakeToolCall("open_app", {"name": "Spotify"})]))
+        yield _FakeChunk(_FakeMsg(tool_calls=[_FakeToolCall("run_shell", {"command": "ls"})]))
+
+    real_chat = llm.ollama.chat
+    llm.ollama.chat = lambda **kw: fake_stream()
+    try:
+        events = list(llm.call_brain_stream([{"role": "user", "content": "x"}]))
+    finally:
+        llm.ollama.chat = real_chat
+    tools = [d for t, d in events if t == "tool"]
+    return bool(tools) and tools[0][0] == "open_app"
+
+
+def _check_pending_state_shape() -> bool:
+    """Regression: the single-shot path asked for approval but stored no pending
+    state, so 'yes' never ran the command. build_pending_state must produce a
+    state run_agent can resume (same keys/shape as the agent's own)."""
+    st = build_pending_state("mkdir ~/x", "make a folder called x")
+    call = st["messages"][-1]["tool_calls"][0]["function"]
+    return (
+        set(st) >= {"goal", "confirmed_command", "messages", "retry_counts", "succeeded"}
+        and st["confirmed_command"] == "mkdir ~/x"
+        and st["goal"] == "make a folder called x"
+        and st["messages"][0]["role"] == "system"
+        and call["name"] == "run_shell"
+        and call["arguments"]["command"] == "mkdir ~/x"
+    )
+
+
 def run():
     fails = []
 
-    print("TOOL FAILURE DETECTION (agent):")
+    print("STREAM TOOL-CALL SELECTION (llm — first call wins, matches non-stream):")
+    ok = _check_stream_tool_selection()
+    if not ok:
+        fails.append("call_brain_stream must pick tool_calls[0]")
+    print(f"  {'PASS' if ok else 'FAIL'}  streaming path picks the FIRST tool call")
+
+    print("\nSINGLE-SHOT CONFIRMATION STATE (main/agent):")
+    ok = _check_pending_state_shape()
+    if not ok:
+        fails.append("build_pending_state shape not resumable by run_agent")
+    print(f"  {'PASS' if ok else 'FAIL'}  build_pending_state is resumable by run_agent")
+
+    print("\nTOOL FAILURE DETECTION (agent):")
     for result, exp in TOOL_FAILURE_CASES:
         got = _tool_failed(result)
         ok = got == exp
@@ -425,6 +493,7 @@ def run():
              + len(FILLER_CASES) + len(CAL_RANGE_CASES) + len(GMAIL_QUERY_CASES)
              + len(CLIPBOARD_SECRET_CASES) + len(CLIPBOARD_CLASSIFY_CASES)
              + len(NOTIF_MATCH_CASES) + 1  # +1 for the _extract field check
+             + 2  # stream tool-call selection + pending-state shape
              + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
              + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
              + len(LOCAL_CODE_NEGATIVE_CASES))

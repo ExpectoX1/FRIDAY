@@ -158,7 +158,9 @@ def call_brain_stream(messages: list):
                 yield "token", m.content
 
     if tool_calls:
-        tc = tool_calls[-1].function
+        # First call wins — same convention as the non-streaming _call_brain
+        # (tool_calls[0]), so a request behaves identically on either path.
+        tc = tool_calls[0].function
         yield "tool", (tc.name, dict(tc.arguments))
     else:
         yield "reply", full_content.strip()
@@ -374,7 +376,8 @@ def agent_chat_stream(messages: list):
                 yield "token", m.content
 
     if tool_calls:
-        tc = tool_calls[-1].function
+        # First call wins — matches _call_brain's tool_calls[0].
+        tc = tool_calls[0].function
         name = tc.name
         args = dict(tc.arguments)
         raw_message = {

@@ -6,6 +6,7 @@ from brain.llm import agent_chat, agent_chat_stream
 from brain.personality import get_personality
 from tools.registry import get_tool
 from sandbox.executor import run as executor_run, execute as executor_execute
+from memory.retrieve import NO_MEMORY
 from logger import log_system, log_tool, log_result, log_error, status
 from bridge import state_bus
 
@@ -270,6 +271,31 @@ Rules:
     )
 
 
+def build_pending_state(command: str, goal: str) -> dict:
+    """Pending-confirmation state for a RISKY command caught OUTSIDE the agent
+    loop (the single-shot path). Shaped exactly like the agent's own
+    pending_state, so approve_pending resumes it through run_agent unchanged:
+    the confirmed command executes, its result lands as a tool message, and the
+    loop summarizes. Previously the single-shot path asked for approval but
+    stored nothing — the user's "yes" routed as a brand-new utterance and the
+    command could never actually run."""
+    return {
+        "goal": goal or command,
+        "confirmed_command": command,
+        "messages": [
+            {"role": "system", "content": _get_agent_system_prompt()},
+            {"role": "user", "content": goal or f"Run this command: {command}"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "run_shell", "arguments": {"command": command}}}],
+            },
+        ],
+        "retry_counts": {},
+        "succeeded": [],
+    }
+
+
 async def run_agent(
     user_utterance: str,
     resume_state: dict = None,
@@ -348,7 +374,9 @@ async def run_agent(
                 memory_res = await asyncio.to_thread(
                     memory_tool["function"], query=user_utterance
                 )
-                if memory_res:
+                # NO_MEMORY is the "nothing found" sentinel (also what a dead
+                # Neo4j returns) — injecting it as [Memory Context] is noise.
+                if memory_res and memory_res != NO_MEMORY:
                     context_summary = f"\n[Memory Context]:\n{memory_res}\n"
                     log_system("agent", "Memory context injected.")
         except Exception as e:
