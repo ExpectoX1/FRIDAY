@@ -180,9 +180,22 @@ def set_last_result(label: str, content) -> None:
     _last_result = (label, text[:1500]) if text else None
 
 
-def _system_context() -> str:
+# Does the utterance refer back to a previous result ("open it", "which of
+# those are folders", "read the article")? Only then is the last-result block
+# injected below. Injecting it on EVERY turn distorted tool selection on
+# unrelated questions: with an `ls` listing + the navigate_browser imperative
+# in the system prompt, "what's the latest news on X" picked set_monitor 5/5
+# instead of search_web 5/5 (live misroute, 2026-07-02).
+_REFERS_TO_PRIOR = re.compile(
+    r"\b(it|that|this|those|these|them|the (page|link|site|chords|tab|video|"
+    r"result|results|article|file|files|folder|list|one|first one|second one))\b",
+    re.IGNORECASE,
+)
+
+
+def _system_context(message: str = "") -> str:
     base = get_personality(native_tools=True)
-    if _last_result:
+    if _last_result and (not message or _REFERS_TO_PRIOR.search(message)):
         label, content = _last_result
         base += (
             f"\n\n[Most recent result — from {label}]:\n{content}\n"
@@ -257,7 +270,7 @@ def chat(message: str) -> dict:
     history.append({"role": "user", "content": message})
     trimmed = history[-MAX_HISTORY:]
 
-    messages = [{"role": "system", "content": _system_context()}] + trimmed
+    messages = [{"role": "system", "content": _system_context(message)}] + trimmed
     res = _call_brain(messages)
 
     if res["tool"]:
@@ -288,7 +301,7 @@ def chat_stream(message: str):
     history.append({"role": "user", "content": message})
     trimmed = history[-MAX_HISTORY:]
 
-    messages = [{"role": "system", "content": _system_context()}] + trimmed
+    messages = [{"role": "system", "content": _system_context(message)}] + trimmed
 
     has_tool = False
     full_content = ""

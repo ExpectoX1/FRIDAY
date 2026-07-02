@@ -250,6 +250,18 @@ TOOL_CASES = [
 ]
 
 
+# (last-result content, NEW unrelated utterance, expected tool) — context bleed.
+# Live regression (2026-07-02): with the previous turn's `ls ~/Downloads` result
+# injected into the system prompt, a fresh one-time news question picked
+# set_monitor 5/5 (it registered an unwanted 30-min watch) instead of
+# search_web. The last-result block must only be injected for utterances that
+# actually refer back to a prior result.
+_LS_RESULT = "Files\nArchives\nChess (mac)\nDocuments\nImages\nPLAN.md\nVideos"
+CONTEXT_BLEED_CASES = [
+    (_LS_RESULT, "Was the latest news on Julian Alvarez or to Barcelona?", "search_web"),
+    (_LS_RESULT, "what's the latest news on julian alvarez, is he moving to barcelona", "search_web"),
+]
+
 # (last-result content, follow-up utterance, expected tool) — reference resolution
 CONTINUITY_CASES = [
     ("STAY chords (URL: https://tabs.ultimate-guitar.com/tab/the-kid-laroi/stay-3421793)",
@@ -485,6 +497,18 @@ def run():
             fails.append(utt)
         print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
 
+    print("\nCONTEXT BLEED (unrelated question after a tool result):")
+    for ctx, utt, exp in CONTEXT_BLEED_CASES:
+        llm.set_last_result("run_shell", ctx)
+        llm.history = []
+        r = chat(utt)
+        got = r.get("name") if r.get("type") == "tool" else "reply"
+        ok = got == exp
+        if not ok:
+            fails.append(utt)
+        print(f"  {'PASS' if ok else 'FAIL'}  {got:16} (want {exp:16})  {utt}")
+    llm.set_last_result("", "")
+
     print("\nCONTINUITY (refer back to last result):")
     for ctx, utt, exp in CONTINUITY_CASES:
         llm.set_last_result("search_web", ctx)
@@ -523,6 +547,7 @@ def run():
              + 2  # stream tool-call selection + pending-state shape
              + len(PROTECTED_WRITE_CASES)
              + len(ROUTING_CASES) + len(ROUTER_MODEL_CASES) + len(TOOL_CASES)
+             + len(CONTEXT_BLEED_CASES)
              + len(CONTINUITY_CASES) + len(LOCAL_CODE_CASES)
              + len(LOCAL_CODE_NEGATIVE_CASES))
     print(f"\n{total - len(fails)}/{total} passed")
