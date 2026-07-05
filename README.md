@@ -122,7 +122,8 @@ docs/                  # system overview, design docs
 
 ## Acknowledgments
 
-Built solo, with AI pair programmers (Claude and Codex) working in separate lanes — backend and frontend — every change gated by the regression suites before it lands.
+Made with <3 - Sid
+
 
 ## License
 

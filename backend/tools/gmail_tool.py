@@ -11,10 +11,6 @@ newer_than:1d) — which is exactly what lets the user define "important to me".
 Leaf module: no proactive/registry imports, so proactive/mail_monitor.py can
 import the fetcher without an import cycle (mirrors tools/web.py for monitors).
 
-Setup (the user does this, once):
-  1. Enable 2-step verification on the Google account.
-  2. Create an App Password (Google Account → Security → App passwords).
-  3. Add to backend/.env:  GMAIL_USER=you@gmail.com  GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
 """
 from __future__ import annotations
 

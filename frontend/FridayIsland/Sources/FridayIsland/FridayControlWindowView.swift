@@ -524,11 +524,15 @@ private struct ActivityBubble: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(WindowPalette.secondaryText)
 
-            messageText
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(WindowPalette.primaryText)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            if shouldRenderRichReply {
+                richReplyContent
+            } else {
+                messageText
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(WindowPalette.primaryText)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -542,6 +546,37 @@ private struct ActivityBubble: View {
             guard isStreaming else { return }
             withAnimation(.easeInOut(duration: 0.62).repeatForever(autoreverses: true)) {
                 cursorVisible = false
+            }
+        }
+    }
+
+    private var shouldRenderRichReply: Bool {
+        item.kind == .assistantMessage
+            && !isStreaming
+            && richReplyBlocks.contains(where: \.isCode)
+    }
+
+    private var richReplyBlocks: [ReplyMarkdownBlock] {
+        ReplyMarkdownBlock.parse(item.text)
+    }
+
+    private var richReplyContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(richReplyBlocks.enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .text(let text):
+                    if !text.isEmpty {
+                        Text(text)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(WindowPalette.primaryText)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                case .code(let language, let code):
+                    InlineReplyCodeBlock(language: language, code: code) {
+                        copy(code)
+                    }
+                }
             }
         }
     }
@@ -838,6 +873,136 @@ private struct ActivityBubble: View {
 
     private func reveal(_ path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+}
+
+private enum ReplyMarkdownBlock {
+    case text(String)
+    case code(language: String?, code: String)
+
+    var isCode: Bool {
+        if case .code = self {
+            return true
+        }
+        return false
+    }
+
+    static func parse(_ text: String) -> [ReplyMarkdownBlock] {
+        var blocks: [ReplyMarkdownBlock] = []
+        var remainder = text[...]
+
+        while let start = remainder.range(of: "```") {
+            appendText(String(remainder[..<start.lowerBound]), to: &blocks)
+
+            let afterOpeningFence = remainder[start.upperBound...]
+            guard let end = afterOpeningFence.range(of: "```") else {
+                appendText(String(remainder[start.lowerBound...]), to: &blocks)
+                return blocks
+            }
+
+            let fenced = String(afterOpeningFence[..<end.lowerBound])
+            let parsed = parseFence(fenced)
+            if !parsed.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks.append(.code(language: parsed.language, code: parsed.code))
+            }
+            remainder = afterOpeningFence[end.upperBound...]
+        }
+
+        appendText(String(remainder), to: &blocks)
+        return blocks.isEmpty ? [.text(text)] : blocks
+    }
+
+    private static func appendText(_ text: String, to blocks: inout [ReplyMarkdownBlock]) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        blocks.append(.text(trimmed))
+    }
+
+    private static func parseFence(_ fenced: String) -> (language: String?, code: String) {
+        let lines = fenced.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let firstLine = lines.first else {
+            return (nil, fenced)
+        }
+
+        let candidate = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isLanguageTag(candidate) {
+            return (candidate.lowercased(), lines.dropFirst().joined(separator: "\n").trimmedTrailingNewlines())
+        }
+
+        return (nil, fenced.trimmedLeadingNewline().trimmedTrailingNewlines())
+    }
+
+    private static func isLanguageTag(_ text: String) -> Bool {
+        guard !text.isEmpty, text.count <= 24, !text.contains(" ") else {
+            return false
+        }
+        return text.range(of: #"^[A-Za-z0-9_#+.-]+$"#, options: .regularExpression) != nil
+    }
+}
+
+private struct InlineReplyCodeBlock: View {
+    let language: String?
+    let code: String
+    let copyAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(WindowPalette.purple)
+
+                Text((language?.isEmpty == false ? language : "code") ?? "code")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(WindowPalette.secondaryText)
+
+                Spacer(minLength: 0)
+
+                Button(action: copyAction) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(WindowPlainIconButtonStyle())
+                .help("Copy code")
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HighlightedCodeView(code: code, language: language)
+                    .textSelection(.enabled)
+                    .padding(11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(WindowPalette.codeBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(WindowPalette.stroke.opacity(0.8), lineWidth: 1)
+            }
+        }
+        .padding(10)
+        .background(WindowPalette.fileCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(WindowPalette.purple.opacity(0.24), lineWidth: 1)
+        }
+    }
+}
+
+private extension String {
+    func trimmedLeadingNewline() -> String {
+        var result = self
+        while result.first == "\n" || result.first == "\r" {
+            result.removeFirst()
+        }
+        return result
+    }
+
+    func trimmedTrailingNewlines() -> String {
+        var result = self
+        while result.last == "\n" || result.last == "\r" {
+            result.removeLast()
+        }
+        return result
     }
 }
 
