@@ -72,4 +72,6 @@ Add a new assertion to `test_regression.py` whenever a bug is found, rather than
 - Don't over-tackle every bug found in testing — the user gets fatigued by the churn. Prefer
   data-driven decisions (benchmarks/tests) and architectural fixes over per-case prompt tweaks.
 - Commit when work is verified; the repo has been pushing the local branch to remote `main`.
-- End commits with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+- Do NOT add AI co-author trailers ("Co-Authored-By: Claude ...") or "Generated with"
+  lines to commit messages — the user shares this repo publicly and scrubbed the old
+  trailers from history (backup: `backup-with-trailers` branch).
